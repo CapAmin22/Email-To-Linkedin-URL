@@ -70,21 +70,33 @@ async function run() {
   const { job_id, queued } = await ingestRes.json();
   console.log(`  → job_id: ${job_id}, queued: ${queued}\n`);
 
-  // 2. Poll until complete or timeout
-  console.log('Step 2: Polling until job completes...');
+  // 2. Drive worker manually until job completes (cron is daily on Hobby plan)
+  console.log('Step 2: Driving worker until job completes...');
   const start = Date.now();
   let jobData;
 
   while (true) {
-    await sleep(POLL_INTERVAL_MS);
+    // Manually trigger one batch
+    const workerRes = await apiFetch('/api/workers/process-batch', { method: 'POST' });
+    if (workerRes.ok) {
+      const wb = await workerRes.json();
+      if (wb.processed === 0) {
+        // Nothing left to claim — give status a moment to settle
+      }
+    } else {
+      console.warn(`  ⚠ Worker trigger returned ${workerRes.status}`);
+    }
+
+    await sleep(2000);
+
     const statusRes = await apiFetch(`/api/status/${job_id}`);
     if (!statusRes.ok) { console.warn('  ⚠ Status poll failed'); continue; }
     jobData = await statusRes.json();
 
     const elapsed = Math.round((Date.now() - start) / 1000);
-    process.stdout.write(`\r  ${elapsed}s — completed: ${jobData.completed}/${jobData.total} | verified: ${jobData.verified} | review: ${jobData.manual_review}`);
+    process.stdout.write(`\r  ${elapsed}s — completed: ${jobData.completed}/${jobData.total} | verified: ${jobData.verified} | review: ${jobData.manual_review}   `);
 
-    if (jobData.status === 'completed') {
+    if (jobData.status === 'completed' || jobData.completed >= jobData.total) {
       console.log('\n  → Job completed!\n');
       break;
     }
