@@ -296,24 +296,33 @@ export async function triangulateLinkedIn(params) {
 
   await sleep(randomJitter(300, 800));
 
-  // ⑤ Pattern Prediction + Verification (COMPLETELY FREE!)
+  // ⑤ Pattern Prediction — surface candidates whose slug exists. The QA
+  //    gate will still validate identity + affiliation, so existence alone
+  //    is not a verification (avoids /in/john-smith/ false positives).
   console.log('[search] [5/6] Trying pattern prediction...');
   const predicted = predictLinkedInUrl(email, first_name, last_name);
+  const patternHits = [];
   for (const candidate of predicted) {
     const exists = await verifyLinkedInUrl(candidate.url);
     if (exists) {
-      // Mark as pattern-verified so QA gate trusts it
       candidate.source = { method: 'pattern', verified: true };
-      return [candidate];
+      patternHits.push(candidate);
     }
   }
 
   await sleep(randomJitter(500, 1500));
 
-  // ⑥ DuckDuckGo (final fallback)
+  // ⑥ DuckDuckGo — additional candidates (merged with pattern hits)
   console.log('[search] [6/6] Trying DuckDuckGo...');
-  results = await searchDDG(email, first_name, last_name, root_domain);
-  if (results?.length > 0) return results;
+  const ddgResults = await searchDDG(email, first_name, last_name, root_domain);
+
+  const merged = [...patternHits, ...(ddgResults ?? [])]
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+
+  if (merged.length > 0) {
+    console.log(`[search] ✓ Returning ${merged.length} candidate(s) for QA gate`);
+    return merged;
+  }
 
   console.log('[search] ✗ All sources exhausted → manual_review');
   return null;
