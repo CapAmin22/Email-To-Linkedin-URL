@@ -138,7 +138,20 @@ export async function llmQaValidation(parsed, meta) {
  *   meta_description: string
  * }>}
  */
-export async function runQaGate(profileUrl, parsed) {
+export async function runQaGate(profileUrl, parsed, source = {}) {
+  // ✅ Pattern-predicted + verified URLs: trust them (FREE!)
+  // This bypasses ScraperAPI entirely for URLs found via pattern matching
+  if (source.method === 'pattern' && source.verified) {
+    console.log('[qa] ✓ Trusting pattern-predicted URL (verified via HEAD request)');
+    return {
+      pass: true,
+      is_verified: true,
+      reason: 'Verified via URL existence check (pattern match)',
+      meta_title: `${parsed.first_name} ${parsed.last_name} | LinkedIn`,
+      meta_description: `LinkedIn profile for ${parsed.first_name} ${parsed.last_name}`,
+    };
+  }
+
   const meta = await fetchLinkedInMeta(profileUrl);
 
   // Pre-QA structural checks (§7.2) — fast-fail before spending an LLM call

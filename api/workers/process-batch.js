@@ -183,12 +183,13 @@ async function processRecord(record, results) {
 
   for (const candidate of candidates) {
     try {
-      const qa = await runQaGate(candidate.url, parsed);
+      const qa = await runQaGate(candidate.url, parsed, candidate.source);
       await logAudit(recordId, 'qa', qa.is_verified ? 'verified' : 'rejected', {
         url: candidate.url,
         score: candidate.score,
         title: qa.meta_title,
         reason: qa.reason,
+        source: candidate.source?.method,
       }, null);
 
       lastMeta = { meta_title: qa.meta_title, meta_description: qa.meta_description };
