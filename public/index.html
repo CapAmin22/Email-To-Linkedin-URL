@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LinkVerify — Email to LinkedIn Profile Verification</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+          colors: {
+            zinc: {
+              950: '#09090b',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style type="text/tailwindcss">
+    @layer base {
+      body { font-family: 'Inter', system-ui, sans-serif; }
+    }
+  </style>
+</head>
+<body class="bg-zinc-950 text-zinc-100 min-h-screen antialiased">
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none" aria-live="polite"></div>
+
+  <!-- Navigation -->
+  <nav class="border-b border-zinc-800 bg-zinc-950/80 backdrop-blur-sm sticky top-0 z-40">
+    <div class="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <!-- Logo icon -->
+        <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-2-2 2 2 0 0 0-2 2v7h-4v-7a6 6 0 0 1 6-6z"/>
+            <rect x="2" y="9" width="4" height="12"/><circle cx="4" cy="4" r="2"/>
+          </svg>
+        </div>
+        <span class="font-semibold text-zinc-100 tracking-tight">LinkVerify</span>
+        <span class="text-xs text-zinc-500 font-medium bg-zinc-800 px-2 py-0.5 rounded-full">beta</span>
+      </div>
+
+      <!-- API Key indicator -->
+      <div class="flex items-center gap-3">
+        <div id="api-key-indicator" class="flex items-center gap-2 text-sm cursor-pointer hover:text-zinc-300 transition-colors" onclick="toggleApiKeyDrawer()">
+          <div id="api-key-dot" class="w-2 h-2 rounded-full bg-zinc-600"></div>
+          <span id="api-key-label" class="text-zinc-500">Set API Key</span>
+        </div>
+        <button onclick="toggleApiKeyDrawer()" class="text-zinc-500 hover:text-zinc-300 transition-colors">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- API Key Drawer -->
+  <div id="api-key-drawer" class="hidden border-b border-zinc-800 bg-zinc-900/60 backdrop-blur-sm">
+    <div class="max-w-6xl mx-auto px-6 py-4 flex items-center gap-4">
+      <label class="text-sm text-zinc-400 shrink-0 font-medium">API Key</label>
+      <input
+        id="api-key-input"
+        type="password"
+        placeholder="Paste your API key here — stored in localStorage"
+        class="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-colors"
+        oninput="handleApiKeyInput(this.value)"
+      />
+      <button onclick="clearApiKey()" class="text-xs text-zinc-500 hover:text-rose-400 transition-colors shrink-0">Clear</button>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <main class="max-w-6xl mx-auto px-6 pb-20">
+
+    <!-- Hero -->
+    <section class="pt-16 pb-12 text-center">
+      <div class="inline-flex items-center gap-2 bg-indigo-950/50 border border-indigo-800/50 text-indigo-300 text-xs font-medium px-3 py-1.5 rounded-full mb-6">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+        Precision-first · Zero false positives
+      </div>
+      <h1 class="text-4xl sm:text-5xl font-bold tracking-tight text-zinc-100 mb-4">
+        Verify emails to<br/>
+        <span class="gradient-text">LinkedIn profiles</span><br/>
+        with 100% confidence
+      </h1>
+      <p class="text-lg text-zinc-400 max-w-xl mx-auto leading-relaxed">
+        Three-vector search triangulation + strict bipartite LLM QA gate. Every result is <em>verified</em> or flagged for human review — never a guess.
+      </p>
+    </section>
+
+    <!-- Ingest Panel -->
+    <section id="ingest-section" class="mb-10">
+      <div class="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden card-glow">
+        <!-- Tabs -->
+        <div class="flex border-b border-zinc-800">
+          <button
+            id="tab-single"
+            class="tab-btn tab-active relative px-6 py-3.5 text-sm font-medium text-zinc-100 hover:text-zinc-100 transition-colors"
+            onclick="switchTab('single')"
+          >Single email</button>
+          <button
+            id="tab-bulk"
+            class="tab-btn relative px-6 py-3.5 text-sm font-medium text-zinc-500 hover:text-zinc-300 transition-colors"
+            onclick="switchTab('bulk')"
+          >Bulk CSV / paste</button>
+        </div>
+
+        <!-- Single email -->
+        <div id="panel-single" class="p-6">
+          <div class="flex gap-3">
+            <input
+              id="single-email-input"
+              type="email"
+              placeholder="elon.musk@tesla.com"
+              class="flex-1 bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm text-zinc-100 placeholder-zinc-500 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-colors"
+              onkeydown="if(event.key==='Enter') submitSingle()"
+            />
+            <button
+              onclick="submitSingle()"
+              class="btn-primary bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-6 py-3 rounded-xl shrink-0 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              Verify
+            </button>
+          </div>
+        </div>
+
+        <!-- Bulk input -->
+        <div id="panel-bulk" class="p-6 hidden">
+          <div
+            id="drop-zone"
+            class="border-2 border-dashed border-zinc-700 rounded-xl p-8 text-center cursor-pointer transition-colors hover:border-zinc-600"
+            ondragover="event.preventDefault(); this.classList.add('drop-zone-active')"
+            ondragleave="this.classList.remove('drop-zone-active')"
+            ondrop="handleDrop(event)"
+            onclick="document.getElementById('file-input').click()"
+          >
+            <svg class="mx-auto mb-3 text-zinc-600" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <p class="text-sm text-zinc-400">Drop a CSV file here, or <span class="text-indigo-400 font-medium">click to browse</span></p>
+            <p class="text-xs text-zinc-600 mt-1">One email per line · or comma-separated</p>
+            <input id="file-input" type="file" accept=".csv,.txt" class="hidden" onchange="handleFileInput(event)" />
+          </div>
+          <div class="mt-3 relative">
+            <textarea
+              id="bulk-textarea"
+              placeholder="Or paste emails here (one per line)..."
+              rows="4"
+              class="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm text-zinc-100 placeholder-zinc-500 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-colors resize-none"
+              oninput="parseBulkInput(this.value)"
+            ></textarea>
+          </div>
+          <div id="bulk-preview" class="hidden mt-3 flex items-center justify-between">
+            <span id="bulk-count" class="text-sm text-zinc-400"></span>
+            <button
+              onclick="submitBulk()"
+              class="btn-primary bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-6 py-2.5 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              Verify <span id="bulk-count-btn">0</span> emails
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Job Dashboard (hidden until a job is running) -->
+    <section id="dashboard-section" class="hidden mb-10">
+      <div class="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden card-glow">
+        <!-- Dashboard header -->
+        <div class="px-6 py-4 border-b border-zinc-800 flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <h2 class="font-semibold text-zinc-100">Job Dashboard</h2>
+            <div id="job-status-pill" class="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/20">
+              <div class="pulse-dot w-1.5 h-1.5 rounded-full bg-amber-400"></div>
+              <span>Running</span>
+            </div>
+          </div>
+          <div class="flex items-center gap-3">
+            <span id="job-time" class="text-xs text-zinc-500"></span>
+            <button
+              onclick="exportCsv()"
+              class="flex items-center gap-2 text-xs font-medium text-zinc-400 hover:text-zinc-100 bg-zinc-800 hover:bg-zinc-700 px-3 py-1.5 rounded-lg transition-colors"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Download CSV
+            </button>
+          </div>
+        </div>
+
+        <!-- Progress bar -->
+        <div class="px-6 pt-4 pb-2">
+          <div class="flex items-center justify-between text-xs text-zinc-500 mb-2">
+            <span id="progress-label">0 / 0 processed</span>
+            <span id="progress-pct">0%</span>
+          </div>
+          <div class="h-2 bg-zinc-800 rounded-full overflow-hidden">
+            <div id="progress-bar" class="progress-bar h-full rounded-full" style="width:0%"></div>
+          </div>
+        </div>
+
+        <!-- Stat cards -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4">
+          <div class="bg-zinc-800/60 rounded-xl p-4 card-glow">
+            <p class="text-xs text-zinc-500 font-medium mb-1">Pending</p>
+            <p id="stat-pending" class="text-2xl font-bold text-zinc-100">—</p>
+          </div>
+          <div class="bg-emerald-950/40 border border-emerald-900/30 rounded-xl p-4 card-glow">
+            <p class="text-xs text-emerald-400 font-medium mb-1">Verified</p>
+            <p id="stat-verified" class="text-2xl font-bold text-emerald-400">—</p>
+          </div>
+          <div class="bg-amber-950/40 border border-amber-900/30 rounded-xl p-4 card-glow">
+            <p class="text-xs text-amber-400 font-medium mb-1">Manual Review</p>
+            <p id="stat-manual" class="text-2xl font-bold text-amber-400">—</p>
+          </div>
+          <div class="bg-rose-950/40 border border-rose-900/30 rounded-xl p-4 card-glow">
+            <p class="text-xs text-rose-400 font-medium mb-1">Errors</p>
+            <p id="stat-errors" class="text-2xl font-bold text-rose-400">—</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Results Table -->
+    <section id="results-section" class="hidden">
+      <div class="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden card-glow">
+        <!-- Table header with search -->
+        <div class="px-6 py-4 border-b border-zinc-800 flex items-center justify-between gap-4">
+          <h2 class="font-semibold text-zinc-100 shrink-0">Results</h2>
+          <div class="relative max-w-xs w-full">
+            <svg class="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+            </svg>
+            <input
+              id="table-search"
+              type="text"
+              placeholder="Search email or URL..."
+              class="w-full bg-zinc-800 border border-zinc-700 rounded-lg pl-8 pr-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-colors"
+              oninput="filterTable(this.value)"
+            />
+          </div>
+        </div>
+
+        <!-- Table -->
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-zinc-800 text-left">
+                <th class="px-4 py-3 text-xs font-medium text-zinc-500 uppercase tracking-wider">Status</th>
+                <th class="px-4 py-3 text-xs font-medium text-zinc-500 uppercase tracking-wider">Email</th>
+                <th class="px-4 py-3 text-xs font-medium text-zinc-500 uppercase tracking-wider">LinkedIn URL</th>
+                <th class="px-4 py-3 text-xs font-medium text-zinc-500 uppercase tracking-wider">Reason / Title</th>
+                <th class="px-4 py-3 text-xs font-medium text-zinc-500 uppercase tracking-wider">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="results-tbody">
+              <!-- Rows injected by app.js -->
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Empty state -->
+        <div id="table-empty" class="py-16 text-center hidden">
+          <svg class="mx-auto mb-3 text-zinc-700" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+          </svg>
+          <p class="text-zinc-500">No matching results</p>
+        </div>
+
+        <!-- Loading skeleton -->
+        <div id="table-loading" class="p-6 space-y-3 hidden">
+          <div class="h-10 bg-zinc-800 rounded-lg animate-pulse"></div>
+          <div class="h-10 bg-zinc-800 rounded-lg animate-pulse opacity-75"></div>
+          <div class="h-10 bg-zinc-800 rounded-lg animate-pulse opacity-50"></div>
+        </div>
+
+        <!-- Pagination -->
+        <div id="pagination" class="hidden px-6 py-4 border-t border-zinc-800 flex items-center justify-between">
+          <span id="pagination-info" class="text-xs text-zinc-500"></span>
+          <div class="flex items-center gap-2">
+            <button
+              id="prev-page"
+              onclick="changePage(-1)"
+              class="text-xs font-medium text-zinc-400 hover:text-zinc-100 bg-zinc-800 hover:bg-zinc-700 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-40"
+              disabled
+            >← Prev</button>
+            <button
+              id="next-page"
+              onclick="changePage(1)"
+              class="text-xs font-medium text-zinc-400 hover:text-zinc-100 bg-zinc-800 hover:bg-zinc-700 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-40"
+            >Next →</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
