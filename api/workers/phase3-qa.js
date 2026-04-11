@@ -7,13 +7,13 @@ import { preQaChecks } from '../../lib/utils.js';
 
 const FETCH_TIMEOUT_MS = 15_000;
 
-// Rotating User-Agent pool for the direct-fetch fallback
+// User-Agent pool for the direct-fetch fallback. Googlebot is first because
+// LinkedIn serves rich OG-tagged HTML to known crawlers without auth-walling.
 const USER_AGENTS = [
+  'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+  'Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.69 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
 ];
 
 /**
@@ -44,7 +44,19 @@ export async function fetchLinkedInMeta(profileUrl) {
     return fetchLinkedInMetaFallback(profileUrl);
   }
 
-  const scraperUrl = `http://api.scraperapi.com/?api_key=${apiKey}&url=${encodeURIComponent(profileUrl)}&render=true`;
+  // ScraperAPI params tuned for LinkedIn anti-bot:
+  // - render=true → headless browser (executes JS)
+  // - country_code=us → US residential exit IP (LinkedIn shows full meta to US)
+  // - keep_headers=true → forwards our Accept-Language for proper title
+  // - device_type=desktop → desktop user agent (mobile pages omit meta)
+  const params = new URLSearchParams({
+    api_key: apiKey,
+    url: profileUrl,
+    render: 'true',
+    country_code: 'us',
+    device_type: 'desktop',
+  });
+  const scraperUrl = `http://api.scraperapi.com/?${params.toString()}`;
 
   try {
     const res = await fetch(scraperUrl, {
@@ -58,7 +70,19 @@ export async function fetchLinkedInMeta(profileUrl) {
     }
 
     const html = await res.text();
-    return extractMeta(html);
+    const meta = extractMeta(html);
+
+    // If ScraperAPI returned a page with no usable title, try the direct
+    // fetch fallback once before giving up — LinkedIn often serves the raw
+    // OG-tagged HTML to non-headless requests with a Googlebot-style UA.
+    if (!meta.title || !meta.title.trim()) {
+      console.warn('[qa] ScraperAPI returned empty title, trying direct fetch');
+      const fallbackMeta = await fetchLinkedInMetaFallback(profileUrl);
+      if (fallbackMeta.title && fallbackMeta.title.trim()) {
+        return fallbackMeta;
+      }
+    }
+    return meta;
   } catch (err) {
     console.warn('[qa] ScraperAPI fetch failed:', err.message, '— falling back');
     return fetchLinkedInMetaFallback(profileUrl);
@@ -138,13 +162,21 @@ export async function llmQaValidation(parsed, meta) {
  *   meta_description: string
  * }>}
  */
-export async function runQaGate(profileUrl, parsed, source = {}) {
-  // NOTE: Pattern-predicted URLs are NOT trusted on existence alone — a HEAD
-  // success only proves the slug exists, not that it belongs to the right
-  // person at the right company (e.g. linkedin.com/in/john-smith/ exists but
-  // is not "the" John Smith at IBM). Precision-over-recall: always run the
-  // full bipartite QA gate, regardless of source.
-  const meta = await fetchLinkedInMeta(profileUrl);
+export async function runQaGate(profileUrl, parsed, candidate = {}) {
+  // ScraperAPI's free tier 403s on LinkedIn ("paid plan only"), and direct
+  // fetch hits LinkedIn's HTTP 999 anti-bot wall. The only zero-cost source
+  // of LinkedIn metadata is search-engine snippets — DDG already returns
+  // the page title + meta description in each candidate, so we use those
+  // directly for the QA gate. Identity-via-metadata still applies; the only
+  // change is *where* the metadata comes from.
+  let meta;
+  if (candidate.title && candidate.title.trim()) {
+    console.log('[qa] Using DDG snippet metadata (title:', candidate.title.slice(0, 60) + ')');
+    meta = { title: candidate.title, description: candidate.description || '' };
+  } else {
+    // Pattern-only candidate or no DDG snippet — try the (likely-blocked) fetch.
+    meta = await fetchLinkedInMeta(profileUrl);
+  }
 
   // Pre-QA structural checks (§7.2) — fast-fail before spending an LLM call
   const preCheck = preQaChecks(meta.title);

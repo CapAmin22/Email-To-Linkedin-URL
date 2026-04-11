@@ -213,7 +213,11 @@ async function verifyLinkedInUrl(url) {
   }
 }
 
-// ─ Fallback 6: DuckDuckGo (original) ──────────────────────────────────────
+// ─ Fallback 6: DuckDuckGo (captures title + description from snippets) ───
+// DDG search snippets contain LinkedIn page <title> + meta description, so
+// we can verify identity without ever scraping LinkedIn directly. This is
+// the only zero-cost path because ScraperAPI's free tier blocks LinkedIn
+// (returns 403 "domain only accessible via paid plan").
 async function searchDDG(email, firstName, lastName, domain) {
   const fullName = `${firstName} ${lastName}`;
   const queries = [
@@ -229,7 +233,7 @@ async function searchDDG(email, firstName, lastName, domain) {
 
   results.forEach((result, vectorIndex) => {
     if (result.status !== 'fulfilled') {
-      console.warn(`[search] DDG vector ${vectorIndex} failed`);
+      console.warn(`[search] DDG vector ${vectorIndex} failed:`, result.reason?.message);
       return;
     }
 
@@ -239,19 +243,31 @@ async function searchDDG(email, firstName, lastName, domain) {
       if (!url) continue;
 
       if (!urlMap.has(url)) {
-        urlMap.set(url, { url, score: 0, vectors: [] });
+        urlMap.set(url, {
+          url,
+          score: 0,
+          vectors: [],
+          title: '',
+          description: '',
+          source: { method: 'ddg' },
+        });
       }
       const entry = urlMap.get(url);
       if (!entry.vectors.includes(vectorIndex)) {
         entry.score += 1;
         entry.vectors.push(vectorIndex);
       }
+      // Prefer the longest title/description (richest snippet) across vectors
+      if (r.title && r.title.length > entry.title.length) entry.title = r.title;
+      if (r.description && r.description.length > entry.description.length) {
+        entry.description = r.description;
+      }
     }
   });
 
   const ranked = [...urlMap.values()].sort((a, b) => b.score - a.score);
   if (ranked.length > 0) {
-    console.log('[search] ✓ DDG found:', ranked.length, 'result(s)');
+    console.log('[search] ✓ DDG found:', ranked.length, 'result(s) with snippets');
     return ranked;
   }
   return null;
