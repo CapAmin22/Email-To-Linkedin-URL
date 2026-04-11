@@ -1,0 +1,24 @@
+{
+  "name": "email-to-linkedin-url",
+  "version": "0.1.0",
+  "description": "Zero-cost deterministic LinkedIn URL verification agent. Professional email → LinkedIn profile URL with 100% confidence.",
+  "engines": {
+    "node": ">=20"
+  },
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "migrate": "node scripts/migrate.js",
+    "verify-schema": "node scripts/verify-schema.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.4",
+    "duck-duck-scrape": "^2.2.5",
+    "pg": "^8.13.3",
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "vitest": "^3.1.1"
+  }
+}
