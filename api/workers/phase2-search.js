@@ -1,8 +1,10 @@
 // api/workers/phase2-search.js — Phase 2: Multi-Source Search with FREE Fallbacks
-// §6.2 + Enhanced — Gemini Search → Nubela → GitHub → Apollo → Hunter → Pattern → DDG
+// Powerhouse pipeline: LLM X-ray Queries → Google (ScraperAPI) → Serper → Gemini Search
+// → Nubela → GitHub → Apollo → Hunter → Pattern → DDG
 
 import { search } from 'duck-duck-scrape';
 import { normalizeLinkedInUrl, sleep, randomJitter } from '../../lib/utils.js';
+import { callLLM } from '../../lib/llm.js';
 
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -11,29 +13,99 @@ const HUNTER_KEY = process.env.HUNTER_API_KEY;
 const NUBELA_KEY = process.env.API_NUBELA || process.env.PROXYCURL_API_KEY;
 
 const SCRAPER_API_KEY = process.env.SCRAPER_API_KEY;
+const SERPER_API_KEY = process.env.SERPER_API_KEY;
 
-// ─ Source 0a: ScraperAPI Google Search (structured, very reliable) ─────────
-// ScraperAPI's structured Google search endpoint is fast, returns clean JSON,
-// and works for linkedin.com site-restricted queries (unlike LinkedIn scraping
-// which requires a paid plan). Free tier: 1000 requests.
-async function searchGoogle(email, firstName, lastName, companyName, domain) {
-  if (!SCRAPER_API_KEY) return null;
+// ─ LLM-Powered X-Ray Query Generator ────────────────────────────────────────
+// Uses LLM to generate diverse, tailored Google X-ray queries for each person.
+// This is the key breakthrough: instead of 2-3 hardcoded patterns, we get 5
+// contextually-aware queries that handle generic company names, common names,
+// single-name emails, and varied LinkedIn URL slug patterns.
+const XRAY_SYSTEM_PROMPT = `You are a LinkedIn profile search expert. Generate exactly 5 diverse Google X-ray search queries to find a specific person's LinkedIn profile.
 
+Rules:
+1. Every query MUST start with: site:linkedin.com/in
+2. Use double quotes around names and companies for exact match
+3. Vary your approach across queries:
+   - Query 1: Full name + company name (most specific)
+   - Query 2: Full name + company domain/variations (handles rebranding)
+   - Query 3: Full name only (catches people who changed companies)
+   - Query 4: Email local part as potential LinkedIn slug pattern (e.g., "john.doe" → "john-doe")
+   - Query 5: Creative variation (initials, name without quotes, company abbreviation)
+4. For single-name emails (no last name), focus on first name + company combinations
+5. For generic company names (like "Bubble", "Slack", "Monday"), also include the domain form
+6. Return ONLY a JSON array of 5 query strings. No explanation.
+
+Example output: ["site:linkedin.com/in \\"John Doe\\" \\"Acme Corp\\"", "site:linkedin.com/in \\"John Doe\\" acme.com", ...]`;
+
+async function generateXrayQueries(email, firstName, lastName, companyName, domain) {
+  const localPart = email.split('@')[0];
   const fullName = [firstName, lastName].filter(Boolean).join(' ');
-  // Build a diverse set of queries. Order matters — most specific first.
-  // Each query is scored by how many vectors (queries) surface the same URL.
+
+  const userPrompt = `Generate 5 LinkedIn X-ray queries for:
+- Email: ${email}
+- First Name: ${firstName}
+- Last Name: ${lastName || '(unknown)'}
+- Company: ${companyName}
+- Domain: ${domain}
+- Email local part: ${localPart}`;
+
+  try {
+    const result = await callLLM(XRAY_SYSTEM_PROMPT, userPrompt);
+    const queries = Array.isArray(result) ? result : result.queries || result.q || [];
+    if (queries.length > 0) {
+      console.log(`[search] LLM generated ${queries.length} X-ray queries`);
+      return queries.slice(0, 5);
+    }
+  } catch (err) {
+    console.warn('[search] LLM query generation failed:', err.message);
+  }
+
+  // Fallback to hardcoded queries if LLM fails
+  console.log('[search] Using fallback hardcoded queries');
   const queries = [];
   if (lastName) {
-    // Full name + company (strongest signal)
-    queries.push(`"${firstName} ${lastName}" "${companyName}" site:linkedin.com/in`);
-    // Full name + domain (catches aliases like "Bubble" vs "bubble.io")
-    queries.push(`"${firstName} ${lastName}" site:linkedin.com/in`);
+    queries.push(`site:linkedin.com/in "${firstName} ${lastName}" "${companyName}"`);
+    queries.push(`site:linkedin.com/in "${firstName} ${lastName}" "${domain}"`);
+    queries.push(`site:linkedin.com/in "${firstName} ${lastName}"`);
+    queries.push(`site:linkedin.com/in "${localPart.replace(/[._]/g, '-')}" "${companyName}"`);
+    queries.push(`site:linkedin.com/in ${firstName} ${lastName} ${companyName}`);
   } else {
-    // Single-name: use company to disambiguate
-    queries.push(`"${firstName}" "${companyName}" site:linkedin.com/in`);
+    queries.push(`site:linkedin.com/in "${firstName}" "${companyName}"`);
+    queries.push(`site:linkedin.com/in "${firstName}" "${domain}"`);
+    queries.push(`site:linkedin.com/in "${localPart}" "${companyName}"`);
   }
-  // Email local part + domain (catches non-obvious slug patterns like "22amin")
-  queries.push(`"${email.split('@')[0]}" "${domain}" site:linkedin.com/in`);
+  return queries;
+}
+
+// ─ Shared: Execute queries via a Google search backend ───────────────────────
+function collectLinkedInResults(organicResults, queryIndex, urlMap, method) {
+  for (const result of organicResults) {
+    const url = normalizeLinkedInUrl(result.link || result.url);
+    if (!url) continue;
+
+    if (!urlMap.has(url)) {
+      urlMap.set(url, {
+        url,
+        score: 0,
+        vectors: [],
+        title: '',
+        description: '',
+        source: { method },
+      });
+    }
+    const entry = urlMap.get(url);
+    entry.score += 1;
+    if (!entry.vectors.includes(queryIndex)) entry.vectors.push(queryIndex);
+    const title = result.title || '';
+    const desc = result.snippet || result.description || '';
+    if (title.length > entry.title.length) entry.title = title;
+    if (desc.length > entry.description.length) entry.description = desc;
+  }
+}
+
+// ─ Source 1: ScraperAPI Google Search (structured, very reliable) ─────────
+async function searchGoogle(queries) {
+  if (!SCRAPER_API_KEY) return null;
 
   const urlMap = new Map();
 
@@ -49,36 +121,64 @@ async function searchGoogle(email, firstName, lastName, companyName, domain) {
       }
 
       const data = await res.json();
-      for (const result of data.organic_results || []) {
-        const url = normalizeLinkedInUrl(result.link);
-        if (!url) continue;
-
-        if (!urlMap.has(url)) {
-          urlMap.set(url, {
-            url,
-            score: 0,
-            vectors: [],
-            title: '',
-            description: '',
-            source: { method: 'google' },
-          });
-        }
-        const entry = urlMap.get(url);
-        entry.score += 1;
-        if (!entry.vectors.includes(i)) entry.vectors.push(i);
-        if (result.title && result.title.length > entry.title.length) entry.title = result.title;
-        if (result.snippet && result.snippet.length > entry.description.length) entry.description = result.snippet;
-      }
+      collectLinkedInResults(data.organic_results || [], i, urlMap, 'google');
     } catch (err) {
       console.warn(`[search] Google q${i} error:`, err.message);
     }
 
-    await sleep(randomJitter(500, 1200));
+    if (i < queries.length - 1) await sleep(randomJitter(500, 1200));
   }
 
   const ranked = [...urlMap.values()].sort((a, b) => b.score - a.score);
   if (ranked.length > 0) {
-    console.log('[search] ✓ Google found:', ranked.length, 'result(s)');
+    console.log('[search] ✓ Google found:', ranked.length, 'result(s), top score:', ranked[0].score);
+    return ranked;
+  }
+  return null;
+}
+
+// ─ Source 2: Serper.dev (fast, 2500 free queries) ────────────────────────
+async function searchSerper(queries) {
+  if (!SERPER_API_KEY) return null;
+
+  const urlMap = new Map();
+
+  for (let i = 0; i < queries.length; i++) {
+    const q = queries[i];
+    try {
+      const res = await fetch('https://google.serper.dev/search', {
+        method: 'POST',
+        headers: {
+          'X-API-KEY': SERPER_API_KEY,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ q, num: 5 }),
+        signal: AbortSignal.timeout(15000),
+      });
+
+      if (!res.ok) {
+        console.warn(`[search] Serper q${i} returned ${res.status}`);
+        continue;
+      }
+
+      const data = await res.json();
+      // Serper returns { organic: [{ title, link, snippet }] }
+      const results = (data.organic || []).map(r => ({
+        link: r.link,
+        title: r.title,
+        snippet: r.snippet,
+      }));
+      collectLinkedInResults(results, i, urlMap, 'serper');
+    } catch (err) {
+      console.warn(`[search] Serper q${i} error:`, err.message);
+    }
+
+    if (i < queries.length - 1) await sleep(randomJitter(300, 800));
+  }
+
+  const ranked = [...urlMap.values()].sort((a, b) => b.score - a.score);
+  if (ranked.length > 0) {
+    console.log('[search] ✓ Serper found:', ranked.length, 'result(s), top score:', ranked[0].score);
     return ranked;
   }
   return null;
@@ -439,7 +539,12 @@ async function searchDDG(email, firstName, lastName, domain) {
 
 // ═════════════════════════════════════════════════════════════════════════════
 /**
- * Main triangulation with full FREE fallback chain
+ * Main triangulation with full FREE fallback chain.
+ *
+ * The key innovation: LLM generates 5 diverse X-ray queries tailored to
+ * each person. These queries are then executed across multiple Google search
+ * backends (ScraperAPI, Serper). URLs that appear across multiple queries
+ * get higher scores, making the top result very likely to be correct.
  */
 export async function triangulateLinkedIn(params) {
   const { first_name, last_name, root_domain, legal_company_name, email } = params;
@@ -448,52 +553,66 @@ export async function triangulateLinkedIn(params) {
   console.log(`\n[search] Starting triangulation for: ${email}`);
   console.log(`[search] Target: ${fullName} @ ${legal_company_name}`);
 
+  // Step 0: Generate diverse X-ray queries via LLM
+  console.log('[search] [0/9] Generating X-ray queries via LLM...');
+  const xrayQueries = await generateXrayQueries(
+    email, first_name, last_name, legal_company_name, root_domain
+  );
+  console.log('[search] Queries:', xrayQueries.map((q, i) => `\n  q${i}: ${q}`).join(''));
+
   // ① Google Search via ScraperAPI (structured, reliable, gets title+snippet)
-  console.log('[search] [1/8] Trying Google Search (ScraperAPI)...');
-  let results = await searchGoogle(email, first_name, last_name, legal_company_name, root_domain);
+  console.log('[search] [1/9] Trying Google Search (ScraperAPI)...');
+  let results = await searchGoogle(xrayQueries);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ② Gemini Search Grounding (backup Google Search)
-  console.log('[search] [2/8] Trying Gemini Search Grounding...');
+  // ② Serper.dev (fast, 2500 free queries, second Google backend)
+  console.log('[search] [2/9] Trying Serper.dev...');
+  results = await searchSerper(xrayQueries);
+  if (results?.length > 0) return results;
+
+  await sleep(randomJitter(300, 800));
+
+  // ③ Gemini Search Grounding (backup Google Search via LLM)
+  console.log('[search] [3/9] Trying Gemini Search Grounding...');
   results = await searchGemini(email, first_name, last_name, legal_company_name);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ③ Nubela (direct email match)
-  console.log('[search] [3/8] Trying Nubela...');
+  // ④ Nubela (direct email match)
+  console.log('[search] [4/9] Trying Nubela...');
   results = await searchNubela(email);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ④ GitHub (free - find professionals with LinkedIn in bio)
-  console.log('[search] [4/8] Trying GitHub...');
+  // ⑤ GitHub (free - find professionals with LinkedIn in bio)
+  console.log('[search] [5/9] Trying GitHub...');
   results = await searchGitHub(email, first_name, last_name);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ⑤ Apollo (email-to-profile lookup)
-  console.log('[search] [5/8] Trying Apollo...');
+  // ⑥ Apollo (email-to-profile lookup)
+  console.log('[search] [6/9] Trying Apollo...');
   results = await searchApollo(email, first_name, last_name);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ⑥ Hunter (email verification with data)
-  console.log('[search] [6/8] Trying Hunter...');
+  // ⑦ Hunter (email verification with data)
+  console.log('[search] [7/9] Trying Hunter...');
   results = await searchHunter(email, first_name, last_name);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ⑦ Pattern Prediction — skip if no last_name (too many false-positive slugs).
+  // ⑧ Pattern Prediction — skip if no last_name (too many false-positive slugs).
   let patternHits = [];
   if (last_name) {
-    console.log('[search] [7/8] Trying pattern prediction...');
+    console.log('[search] [8/9] Trying pattern prediction...');
     const predicted = predictLinkedInUrl(email, first_name, last_name);
     for (const candidate of predicted) {
       const exists = await verifyLinkedInUrl(candidate.url);
@@ -503,13 +622,13 @@ export async function triangulateLinkedIn(params) {
       }
     }
   } else {
-    console.log('[search] [7/8] Skipping pattern prediction (no last name)');
+    console.log('[search] [8/9] Skipping pattern prediction (no last name)');
   }
 
   await sleep(randomJitter(500, 1500));
 
-  // ⑧ DuckDuckGo — additional candidates (merged with pattern hits)
-  console.log('[search] [8/8] Trying DuckDuckGo...');
+  // ⑨ DuckDuckGo — additional candidates (merged with pattern hits)
+  console.log('[search] [9/9] Trying DuckDuckGo...');
   const ddgResults = await searchDDG(email, first_name, last_name, root_domain);
 
   const merged = [...patternHits, ...(ddgResults ?? [])]
