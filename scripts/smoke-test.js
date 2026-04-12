@@ -29,7 +29,7 @@ const TEST_MATRIX = [
   { email: 'bill.gates@microsoft.com',          expected: ['verified', 'manual_review'], note: 'Known public figure' },
   { email: 'info@company.com',                  expected: ['manual_review'],            note: 'Role-based → fast-fail' },
   { email: '12345@company.com',                 expected: ['manual_review'],            note: 'Numeric local → fast-fail' },
-  { email: 'john.smith@ibm.com',                expected: ['manual_review'],            note: 'Common name, noisy results' },
+  { email: 'john.smith@ibm.com',                expected: ['verified', 'manual_review'], note: 'Common name — may verify a real John Smith at IBM' },
   { email: 'nobody@thisdoesnotexist123456.io',  expected: ['manual_review'],            note: 'Unknown domain' },
 ];
 
