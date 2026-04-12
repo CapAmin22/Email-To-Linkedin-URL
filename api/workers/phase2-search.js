@@ -22,24 +22,24 @@ async function searchGoogle(email, firstName, lastName, companyName, domain) {
   const localPart = email.split('@')[0];
   const fullName = [firstName, lastName].filter(Boolean).join(' ');
 
-  // Build a diverse set of queries. Order matters — scoring prioritizes queries that appear together.
-  // For generic company names (like "Bubble"), we rely more on name + email patterns.
+  // Build a diverse set of queries. Order matters — each hit increments score by 1.
+  // Most specific (name+company) first, then progressively broader.
   const queries = [];
 
   if (lastName) {
-    // Query 1: Full name alone (catches most profiles)
-    queries.push(`"${firstName} ${lastName}" site:linkedin.com/in`);
-    // Query 2: Full name + company (best case, but may return wrong results for generic names)
+    // Full name + company (strongest signal for known company matches)
     queries.push(`"${firstName} ${lastName}" "${companyName}" site:linkedin.com/in`);
-    // Query 3: Email local part + last name (catches email-based naming patterns like amrita.mutha)
+    // Full name alone (broadest match)
+    queries.push(`"${firstName} ${lastName}" site:linkedin.com/in`);
+    // Email local part + last name (for email-based patterns like amrita.mutha)
     queries.push(`"${localPart}" "${lastName}" site:linkedin.com/in`);
   } else {
-    // Single-name: use company to disambiguate
+    // Single-name: company-qualified first
     queries.push(`"${firstName}" "${companyName}" site:linkedin.com/in`);
-    // Also try name alone for unique first names
+    // Then name alone
     queries.push(`"${firstName}" site:linkedin.com/in`);
   }
-  // Email local part + domain (catches non-obvious slug patterns)
+  // Email local part + domain (catches non-obvious slug patterns like 22amin)
   queries.push(`"${localPart}" "${domain}" site:linkedin.com/in`);
 
   const urlMap = new Map();
@@ -71,8 +71,7 @@ async function searchGoogle(email, firstName, lastName, companyName, domain) {
           });
         }
         const entry = urlMap.get(url);
-        // Weight by query index — earlier (more specific) queries get higher weight if they match
-        entry.score += (queries.length - i);
+        entry.score += 1;
         if (!entry.vectors.includes(i)) entry.vectors.push(i);
         if (result.title && result.title.length > entry.title.length) entry.title = result.title;
         if (result.snippet && result.snippet.length > entry.description.length) entry.description = result.snippet;
@@ -86,13 +85,8 @@ async function searchGoogle(email, firstName, lastName, companyName, domain) {
 
   const ranked = [...urlMap.values()].sort((a, b) => b.score - a.score);
   if (ranked.length > 0) {
-    console.log('[search] ✓ Google found:', ranked.length, 'result(s), top score:', ranked[0].score);
-    // Only return high-confidence results; otherwise let other sources try
-    if (ranked[0].score >= 3) {
-      return ranked;
-    } else {
-      console.warn('[search] Google results have low confidence score, continuing to next source');
-    }
+    console.log('[search] ✓ Google found:', ranked.length, 'result(s)');
+    return ranked;
   }
   return null;
 }
