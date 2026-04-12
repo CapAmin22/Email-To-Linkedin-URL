@@ -19,28 +19,21 @@ const SCRAPER_API_KEY = process.env.SCRAPER_API_KEY;
 async function searchGoogle(email, firstName, lastName, companyName, domain) {
   if (!SCRAPER_API_KEY) return null;
 
-  const localPart = email.split('@')[0];
   const fullName = [firstName, lastName].filter(Boolean).join(' ');
-
-  // Build a diverse set of queries. Order matters — each hit increments score by 1.
-  // Most specific (name+company) first, then progressively broader.
+  // Build a diverse set of queries. Order matters — most specific first.
+  // Each query is scored by how many vectors (queries) surface the same URL.
   const queries = [];
-
   if (lastName) {
-    // Full name + company (strongest signal for known company matches)
+    // Full name + company (strongest signal)
     queries.push(`"${firstName} ${lastName}" "${companyName}" site:linkedin.com/in`);
-    // Full name alone (broadest match)
+    // Full name + domain (catches aliases like "Bubble" vs "bubble.io")
     queries.push(`"${firstName} ${lastName}" site:linkedin.com/in`);
-    // Email local part + last name (for email-based patterns like amrita.mutha)
-    queries.push(`"${localPart}" "${lastName}" site:linkedin.com/in`);
   } else {
-    // Single-name: company-qualified first
+    // Single-name: use company to disambiguate
     queries.push(`"${firstName}" "${companyName}" site:linkedin.com/in`);
-    // Then name alone
-    queries.push(`"${firstName}" site:linkedin.com/in`);
   }
-  // Email local part + domain (catches non-obvious slug patterns like 22amin)
-  queries.push(`"${localPart}" "${domain}" site:linkedin.com/in`);
+  // Email local part + domain (catches non-obvious slug patterns like "22amin")
+  queries.push(`"${email.split('@')[0]}" "${domain}" site:linkedin.com/in`);
 
   const urlMap = new Map();
 
