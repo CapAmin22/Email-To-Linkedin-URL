@@ -10,7 +10,72 @@ const APOLLO_KEY = process.env.APOLLO_API_KEY;
 const HUNTER_KEY = process.env.HUNTER_API_KEY;
 const NUBELA_KEY = process.env.API_NUBELA || process.env.PROXYCURL_API_KEY;
 
-// ─ Source 0: Gemini Search Grounding (FREE — Google Search via LLM) ───────
+const SCRAPER_API_KEY = process.env.SCRAPER_API_KEY;
+
+// ─ Source 0a: ScraperAPI Google Search (structured, very reliable) ─────────
+// ScraperAPI's structured Google search endpoint is fast, returns clean JSON,
+// and works for linkedin.com site-restricted queries (unlike LinkedIn scraping
+// which requires a paid plan). Free tier: 1000 requests.
+async function searchGoogle(email, firstName, lastName, companyName, domain) {
+  if (!SCRAPER_API_KEY) return null;
+
+  const fullName = [firstName, lastName].filter(Boolean).join(' ');
+  const queries = [
+    `"${fullName}" "${companyName}" site:linkedin.com/in`,
+    `"${email}" site:linkedin.com/in`,
+    `"${fullName}" "${domain}" site:linkedin.com/in`,
+  ];
+
+  const urlMap = new Map();
+
+  for (const q of queries) {
+    try {
+      const apiUrl = `https://api.scraperapi.com/structured/google/search?api_key=${SCRAPER_API_KEY}&query=${encodeURIComponent(q)}&num=5`;
+      const res = await fetch(apiUrl, { signal: AbortSignal.timeout(20000) });
+
+      if (!res.ok) {
+        console.warn(`[search] Google search returned ${res.status}`);
+        continue;
+      }
+
+      const data = await res.json();
+      for (const result of data.organic_results || []) {
+        const url = normalizeLinkedInUrl(result.link);
+        if (!url) continue;
+
+        if (!urlMap.has(url)) {
+          urlMap.set(url, {
+            url,
+            score: 0,
+            vectors: [],
+            title: result.title || '',
+            description: result.snippet || '',
+            source: { method: 'google' },
+          });
+        }
+        const entry = urlMap.get(url);
+        entry.score += 1;
+        entry.vectors.push(queries.indexOf(q));
+        // Keep richest title/description
+        if (result.title && result.title.length > entry.title.length) entry.title = result.title;
+        if (result.snippet && result.snippet.length > entry.description.length) entry.description = result.snippet;
+      }
+    } catch (err) {
+      console.warn(`[search] Google search error:`, err.message);
+    }
+
+    await sleep(randomJitter(500, 1200));
+  }
+
+  const ranked = [...urlMap.values()].sort((a, b) => b.score - a.score);
+  if (ranked.length > 0) {
+    console.log('[search] ✓ Google found:', ranked.length, 'result(s)');
+    return ranked;
+  }
+  return null;
+}
+
+// ─ Source 0b: Gemini Search Grounding (FREE — Google Search via LLM) ──────
 // Gemini with google_search tool executes real Google searches and returns
 // grounded results. Unlike DDG, this works from Vercel serverless IPs.
 // Returns candidates with DDG-compatible {url, title, description} fields
@@ -374,48 +439,52 @@ export async function triangulateLinkedIn(params) {
   console.log(`\n[search] Starting triangulation for: ${email}`);
   console.log(`[search] Target: ${fullName} @ ${legal_company_name}`);
 
-  // ① Gemini Search Grounding (FREE — Google Search via LLM, works from Vercel IPs)
-  console.log('[search] [1/7] Trying Gemini Search Grounding...');
-  let results = await searchGemini(email, first_name, last_name, legal_company_name);
+  // ① Google Search via ScraperAPI (structured, reliable, gets title+snippet)
+  console.log('[search] [1/8] Trying Google Search (ScraperAPI)...');
+  let results = await searchGoogle(email, first_name, last_name, legal_company_name, root_domain);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ② Nubela (direct email match - strongest signal)
-  console.log('[search] [2/7] Trying Nubela...');
+  // ② Gemini Search Grounding (backup Google Search)
+  console.log('[search] [2/8] Trying Gemini Search Grounding...');
+  results = await searchGemini(email, first_name, last_name, legal_company_name);
+  if (results?.length > 0) return results;
+
+  await sleep(randomJitter(300, 800));
+
+  // ③ Nubela (direct email match)
+  console.log('[search] [3/8] Trying Nubela...');
   results = await searchNubela(email);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ③ GitHub (free - find professionals with LinkedIn in bio)
-  console.log('[search] [3/7] Trying GitHub...');
+  // ④ GitHub (free - find professionals with LinkedIn in bio)
+  console.log('[search] [4/8] Trying GitHub...');
   results = await searchGitHub(email, first_name, last_name);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ④ Apollo (email-to-profile lookup)
-  console.log('[search] [4/7] Trying Apollo...');
+  // ⑤ Apollo (email-to-profile lookup)
+  console.log('[search] [5/8] Trying Apollo...');
   results = await searchApollo(email, first_name, last_name);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ⑤ Hunter (email verification with data)
-  console.log('[search] [5/7] Trying Hunter...');
+  // ⑥ Hunter (email verification with data)
+  console.log('[search] [6/8] Trying Hunter...');
   results = await searchHunter(email, first_name, last_name);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ⑥ Pattern Prediction — surface candidates whose slug exists. The QA
-  //    gate will still validate identity + affiliation, so existence alone
-  //    is not a verification (avoids /in/john-smith/ false positives).
-  // Skip pattern prediction if last_name is empty (too many false-positive slugs).
+  // ⑦ Pattern Prediction — skip if no last_name (too many false-positive slugs).
   let patternHits = [];
   if (last_name) {
-    console.log('[search] [6/7] Trying pattern prediction...');
+    console.log('[search] [7/8] Trying pattern prediction...');
     const predicted = predictLinkedInUrl(email, first_name, last_name);
     for (const candidate of predicted) {
       const exists = await verifyLinkedInUrl(candidate.url);
@@ -425,13 +494,13 @@ export async function triangulateLinkedIn(params) {
       }
     }
   } else {
-    console.log('[search] [6/7] Skipping pattern prediction (no last name)');
+    console.log('[search] [7/8] Skipping pattern prediction (no last name)');
   }
 
   await sleep(randomJitter(500, 1500));
 
-  // ⑦ DuckDuckGo — additional candidates (merged with pattern hits)
-  console.log('[search] [7/7] Trying DuckDuckGo...');
+  // ⑧ DuckDuckGo — additional candidates (merged with pattern hits)
+  console.log('[search] [8/8] Trying DuckDuckGo...');
   const ddgResults = await searchDDG(email, first_name, last_name, root_domain);
 
   const merged = [...patternHits, ...(ddgResults ?? [])]
