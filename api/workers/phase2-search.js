@@ -19,21 +19,28 @@ const SCRAPER_API_KEY = process.env.SCRAPER_API_KEY;
 async function searchGoogle(email, firstName, lastName, companyName, domain) {
   if (!SCRAPER_API_KEY) return null;
 
+  const localPart = email.split('@')[0];
   const fullName = [firstName, lastName].filter(Boolean).join(' ');
-  // Build a diverse set of queries. Order matters — most specific first.
-  // Each query is scored by how many vectors (queries) surface the same URL.
+
+  // Build a diverse set of queries. Order matters — scoring prioritizes queries that appear together.
+  // For generic company names (like "Bubble"), we rely more on name + email patterns.
   const queries = [];
+
   if (lastName) {
-    // Full name + company (strongest signal)
-    queries.push(`"${firstName} ${lastName}" "${companyName}" site:linkedin.com/in`);
-    // Full name + domain (catches aliases like "Bubble" vs "bubble.io")
+    // Query 1: Full name alone (catches most profiles)
     queries.push(`"${firstName} ${lastName}" site:linkedin.com/in`);
+    // Query 2: Full name + company (best case, but may return wrong results for generic names)
+    queries.push(`"${firstName} ${lastName}" "${companyName}" site:linkedin.com/in`);
+    // Query 3: Email local part + last name (catches email-based naming patterns like amrita.mutha)
+    queries.push(`"${localPart}" "${lastName}" site:linkedin.com/in`);
   } else {
     // Single-name: use company to disambiguate
     queries.push(`"${firstName}" "${companyName}" site:linkedin.com/in`);
+    // Also try name alone for unique first names
+    queries.push(`"${firstName}" site:linkedin.com/in`);
   }
-  // Email local part + domain (catches non-obvious slug patterns like "22amin")
-  queries.push(`"${email.split('@')[0]}" "${domain}" site:linkedin.com/in`);
+  // Email local part + domain (catches non-obvious slug patterns)
+  queries.push(`"${localPart}" "${domain}" site:linkedin.com/in`);
 
   const urlMap = new Map();
 
@@ -64,7 +71,8 @@ async function searchGoogle(email, firstName, lastName, companyName, domain) {
           });
         }
         const entry = urlMap.get(url);
-        entry.score += 1;
+        // Weight by query index — earlier (more specific) queries get higher weight if they match
+        entry.score += (queries.length - i);
         if (!entry.vectors.includes(i)) entry.vectors.push(i);
         if (result.title && result.title.length > entry.title.length) entry.title = result.title;
         if (result.snippet && result.snippet.length > entry.description.length) entry.description = result.snippet;
@@ -78,8 +86,13 @@ async function searchGoogle(email, firstName, lastName, companyName, domain) {
 
   const ranked = [...urlMap.values()].sort((a, b) => b.score - a.score);
   if (ranked.length > 0) {
-    console.log('[search] ✓ Google found:', ranked.length, 'result(s)');
-    return ranked;
+    console.log('[search] ✓ Google found:', ranked.length, 'result(s), top score:', ranked[0].score);
+    // Only return high-confidence results; otherwise let other sources try
+    if (ranked[0].score >= 3) {
+      return ranked;
+    } else {
+      console.warn('[search] Google results have low confidence score, continuing to next source');
+    }
   }
   return null;
 }

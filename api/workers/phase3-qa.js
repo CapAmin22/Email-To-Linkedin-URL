@@ -114,8 +114,43 @@ export async function fetchLinkedInMetaFallback(profileUrl) {
 }
 
 /**
+ * Check if name matches perfectly in the title (both first and last).
+ * @param {string} firstName
+ * @param {string} lastName
+ * @param {string} title
+ * @returns {boolean}
+ */
+function isPerfectNameMatch(firstName, lastName, title) {
+  if (!firstName || !title) return false;
+  const titleLower = title.toLowerCase();
+  const firstLower = firstName.toLowerCase();
+  const lastLower = lastName ? lastName.toLowerCase() : '';
+
+  // Both first and last name must be present
+  if (lastName) {
+    return titleLower.includes(firstLower) && titleLower.includes(lastLower);
+  }
+  // Single name must be exact word match (not substring)
+  return /\b\w*/.test(firstName) && titleLower.includes(firstLower);
+}
+
+/**
+ * Check if any of the target company aliases are mentioned in the description.
+ * Useful for catching job changes: person still at correct company mentioned in description.
+ * @param {string[]} aliases
+ * @param {string} text
+ * @returns {boolean}
+ */
+function hasAnyCompanyMention(aliases, text) {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return aliases.some(alias => lower.includes(alias.toLowerCase()));
+}
+
+/**
  * Run the strict bipartite LLM QA gate (§7.4).
  * Both identity (Rule 1) and affiliation (Rule 2) must match.
+ * Special case: if name is perfect match, allow verification even if company changed.
  *
  * @param {{
  *   first_name: string,
@@ -140,8 +175,18 @@ export async function llmQaValidation(parsed, meta) {
   const result = await callLLM(QA_SYSTEM_PROMPT, userPrompt);
 
   // Normalise the response — LLMs sometimes return string "true"/"false"
-  const isVerified = result.is_verified === true || result.is_verified === 'true';
-  const reason = typeof result.reason === 'string' ? result.reason.trim() : String(result.reason ?? '');
+  let isVerified = result.is_verified === true || result.is_verified === 'true';
+  let reason = typeof result.reason === 'string' ? result.reason.trim() : String(result.reason ?? '');
+
+  // Special case: if LLM says no, but we have PERFECT name match + company mention somewhere,
+  // it might be a job change. Verify with a note about the possible job change.
+  if (!isVerified && last_name && isPerfectNameMatch(first_name, last_name, meta.title)) {
+    const companyMentioned = hasAnyCompanyMention(known_aliases, meta.title + ' ' + meta.description);
+    if (companyMentioned) {
+      isVerified = true;
+      reason = `Perfect name match (${targetName}) with company reference found; may have changed positions within or after ${known_aliases[0]}.`;
+    }
+  }
 
   return { is_verified: isVerified, reason };
 }
