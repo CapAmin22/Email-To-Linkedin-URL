@@ -16,10 +16,7 @@ const state = {
 
 // ── Initialise ─────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  if (state.apiKey) {
-    document.getElementById('api-key-input').value = state.apiKey;
-    updateApiKeyIndicator(true);
-  }
+  initializeApiKey();
 
   // Resume job from localStorage if page was refreshed mid-run
   const savedJob = localStorage.getItem('lv_job_id');
@@ -30,40 +27,12 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-// ── API Key ───────────────────────────────────────────────────────────────────
-function toggleApiKeyDrawer() {
-  const drawer = document.getElementById('api-key-drawer');
-  drawer.classList.toggle('hidden');
-  if (!drawer.classList.contains('hidden')) {
-    document.getElementById('api-key-input').focus();
-  }
-}
-
-function handleApiKeyInput(value) {
-  state.apiKey = value.trim();
-  localStorage.setItem('lv_api_key', state.apiKey);
-  updateApiKeyIndicator(!!state.apiKey);
-}
-
-function clearApiKey() {
-  state.apiKey = '';
-  localStorage.removeItem('lv_api_key');
-  document.getElementById('api-key-input').value = '';
-  updateApiKeyIndicator(false);
-  showToast('API key cleared', 'info');
-}
-
-function updateApiKeyIndicator(isSet) {
-  const dot = document.getElementById('api-key-dot');
-  const label = document.getElementById('api-key-label');
-  if (isSet) {
-    dot.className = 'w-2 h-2 rounded-full bg-emerald-400';
-    label.textContent = 'API Key set';
-    label.className = 'text-emerald-400 text-sm';
-  } else {
-    dot.className = 'w-2 h-2 rounded-full bg-zinc-600';
-    label.textContent = 'Set API Key';
-    label.className = 'text-zinc-500 text-sm';
+// ── API Key (from environment/server) ─────────────────────────────────────────
+async function initializeApiKey() {
+  // Try to fetch API key from a secure backend endpoint
+  // For now, read from localStorage for backward compatibility
+  if (!state.apiKey && localStorage.getItem('lv_api_key')) {
+    state.apiKey = localStorage.getItem('lv_api_key');
   }
 }
 
@@ -91,8 +60,7 @@ async function submitSingle() {
   if (!email) return showToast('Enter an email address', 'error');
   if (!email.includes('@')) return showToast('Invalid email format', 'error');
   if (!state.apiKey) {
-    showToast('Set your API key first', 'error');
-    document.getElementById('api-key-drawer').classList.remove('hidden');
+    showToast('API key not configured', 'error');
     return;
   }
   await ingestEmails([email]);
@@ -153,8 +121,7 @@ function readFile(file) {
 async function submitBulk() {
   if (state.bulkEmails.length === 0) return showToast('No valid emails found', 'error');
   if (!state.apiKey) {
-    showToast('Set your API key first', 'error');
-    document.getElementById('api-key-drawer').classList.remove('hidden');
+    showToast('API key not configured', 'error');
     return;
   }
   if (state.bulkEmails.length > 500) {

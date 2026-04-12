@@ -20,21 +20,31 @@ async function searchGoogle(email, firstName, lastName, companyName, domain) {
   if (!SCRAPER_API_KEY) return null;
 
   const fullName = [firstName, lastName].filter(Boolean).join(' ');
-  const queries = [
-    `"${fullName}" "${companyName}" site:linkedin.com/in`,
-    `"${email}" site:linkedin.com/in`,
-    `"${fullName}" "${domain}" site:linkedin.com/in`,
-  ];
+  // Build a diverse set of queries. Order matters — most specific first.
+  // Each query is scored by how many vectors (queries) surface the same URL.
+  const queries = [];
+  if (lastName) {
+    // Full name + company (strongest signal)
+    queries.push(`"${firstName} ${lastName}" "${companyName}" site:linkedin.com/in`);
+    // Full name + domain (catches aliases like "Bubble" vs "bubble.io")
+    queries.push(`"${firstName} ${lastName}" site:linkedin.com/in`);
+  } else {
+    // Single-name: use company to disambiguate
+    queries.push(`"${firstName}" "${companyName}" site:linkedin.com/in`);
+  }
+  // Email local part + domain (catches non-obvious slug patterns like "22amin")
+  queries.push(`"${email.split('@')[0]}" "${domain}" site:linkedin.com/in`);
 
   const urlMap = new Map();
 
-  for (const q of queries) {
+  for (let i = 0; i < queries.length; i++) {
+    const q = queries[i];
     try {
       const apiUrl = `https://api.scraperapi.com/structured/google/search?api_key=${SCRAPER_API_KEY}&query=${encodeURIComponent(q)}&num=5`;
       const res = await fetch(apiUrl, { signal: AbortSignal.timeout(20000) });
 
       if (!res.ok) {
-        console.warn(`[search] Google search returned ${res.status}`);
+        console.warn(`[search] Google q${i} returned ${res.status}`);
         continue;
       }
 
@@ -48,20 +58,19 @@ async function searchGoogle(email, firstName, lastName, companyName, domain) {
             url,
             score: 0,
             vectors: [],
-            title: result.title || '',
-            description: result.snippet || '',
+            title: '',
+            description: '',
             source: { method: 'google' },
           });
         }
         const entry = urlMap.get(url);
         entry.score += 1;
-        entry.vectors.push(queries.indexOf(q));
-        // Keep richest title/description
+        if (!entry.vectors.includes(i)) entry.vectors.push(i);
         if (result.title && result.title.length > entry.title.length) entry.title = result.title;
         if (result.snippet && result.snippet.length > entry.description.length) entry.description = result.snippet;
       }
     } catch (err) {
-      console.warn(`[search] Google search error:`, err.message);
+      console.warn(`[search] Google q${i} error:`, err.message);
     }
 
     await sleep(randomJitter(500, 1200));
