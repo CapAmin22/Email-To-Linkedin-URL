@@ -1,20 +1,109 @@
 // api/workers/phase2-search.js — Phase 2: Multi-Source Search with FREE Fallbacks
-// §6.2 + Enhanced — Nubela → GitHub → Apollo → Hunter → Pattern Predict → DDG
+// §6.2 + Enhanced — Gemini Search → Nubela → GitHub → Apollo → Hunter → Pattern → DDG
 
 import { search } from 'duck-duck-scrape';
 import { normalizeLinkedInUrl, sleep, randomJitter } from '../../lib/utils.js';
 
+const GEMINI_KEY = process.env.GEMINI_API_KEY;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const APOLLO_KEY = process.env.APOLLO_API_KEY;
 const HUNTER_KEY = process.env.HUNTER_API_KEY;
-const NUBELA_KEY = process.env.PROXYCURL_API_KEY;
+const NUBELA_KEY = process.env.API_NUBELA || process.env.PROXYCURL_API_KEY;
 
-// ─ Fallback 1: Nubela/Proxycurl (direct email lookup) ─────────────────────
+// ─ Source 0: Gemini Search Grounding (FREE — Google Search via LLM) ───────
+// Gemini with google_search tool executes real Google searches and returns
+// grounded results. Unlike DDG, this works from Vercel serverless IPs.
+// Returns candidates with DDG-compatible {url, title, description} fields
+// so the QA gate can use snippet metadata directly.
+async function searchGemini(email, firstName, lastName, companyName) {
+  if (!GEMINI_KEY) return null;
+
+  const fullName = [firstName, lastName].filter(Boolean).join(' ');
+  // Natural-language prompt that triggers Google Search grounding. Do NOT
+  // ask for JSON — grounding fires more reliably for conversational queries.
+  const prompt = `Search the internet and find the LinkedIn profile page for ${fullName} who works at ${companyName}. Their work email is ${email}. Provide any linkedin.com/in/ URLs you find, with the page title shown in Google results.`;
+
+  try {
+    // Try gemini-2.0-flash first (most reliable grounding), fall back to 2.5-flash
+    const models = ['gemini-2.0-flash', 'gemini-2.5-flash'];
+    for (const model of models) {
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`;
+      const res = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          tools: [{ google_search: {} }],
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+
+      if (res.status === 429) {
+        console.warn(`[search] Gemini ${model} rate-limited, trying next model`);
+        await sleep(2000);
+        continue;
+      }
+      if (!res.ok) {
+        console.warn(`[search] Gemini ${model} returned ${res.status}`);
+        continue;
+      }
+
+      const data = await res.json();
+      const text = data.candidates?.[0]?.content?.parts
+        ?.filter(p => p.text)
+        ?.map(p => p.text)
+        ?.join('') || '';
+
+      // Extract all linkedin.com/in/ URLs from the response text
+      const urlMap = new Map();
+      const linkedinMatches = text.matchAll(/https?:\/\/(?:www\.)?linkedin\.com\/in\/[\w-]+\/?/gi);
+      for (const m of linkedinMatches) {
+        const normalized = normalizeLinkedInUrl(m[0]);
+        if (normalized && !urlMap.has(normalized)) {
+          // Try to extract the surrounding context as title/description
+          const idx = text.indexOf(m[0]);
+          const context = text.slice(Math.max(0, idx - 200), idx + m[0].length + 200);
+          urlMap.set(normalized, {
+            url: normalized,
+            score: 2.5,
+            vectors: [0, 1],
+            title: '',
+            description: context.replace(/\n/g, ' ').trim().slice(0, 300),
+            source: { method: 'gemini_search' },
+          });
+        }
+      }
+
+      // Also extract from grounding search suggestions if any
+      const suggestions = data.candidates?.[0]?.groundingMetadata?.webSearchQueries || [];
+      if (suggestions.length > 0) {
+        console.log('[search] Gemini search queries:', suggestions.join(' | '));
+      }
+
+      if (urlMap.size > 0) {
+        const results = [...urlMap.values()];
+        console.log(`[search] ✓ Gemini Search (${model}) found:`, results.length, 'result(s)');
+        return results;
+      }
+
+      console.log(`[search] Gemini ${model} searched but found no LinkedIn URLs in response`);
+      // Don't try next model if this one ran successfully
+      break;
+    }
+  } catch (err) {
+    console.warn('[search] Gemini Search error:', err.message);
+  }
+  return null;
+}
+
+// ─ Fallback 1: Nubela/NinjaPear (direct email lookup) ────────────────────
+// Proxycurl was sunset; the key now works with the NinjaPear employee API.
 async function searchNubela(email) {
   if (!NUBELA_KEY) return null;
 
   try {
-    const res = await fetch('https://nubela.co/proxycurl/api/find/email_to_profile', {
+    const apiUrl = `https://nubela.co/api/v1/employee/profile?work_email=${encodeURIComponent(email)}`;
+    const res = await fetch(apiUrl, {
       headers: { 'Authorization': `Bearer ${NUBELA_KEY}` },
       signal: AbortSignal.timeout(10000),
     });
@@ -44,9 +133,10 @@ async function searchGitHub(email, firstName, lastName) {
     const domain = email.split('@')[1];
     const company = domain.split('.')[0]; // company.com → company
 
+    const fullName = [firstName, lastName].filter(Boolean).join(' ');
     const searchQueries = [
-      `${firstName} ${lastName} type:user location:${company}`,
-      `${firstName} ${lastName} type:user`,
+      `${fullName} type:user location:${company}`,
+      `${fullName} type:user`,
       email.split('@')[0], // username part
     ];
 
@@ -219,7 +309,7 @@ async function verifyLinkedInUrl(url) {
 // the only zero-cost path because ScraperAPI's free tier blocks LinkedIn
 // (returns 403 "domain only accessible via paid plan").
 async function searchDDG(email, firstName, lastName, domain) {
-  const fullName = `${firstName} ${lastName}`;
+  const fullName = [firstName, lastName].filter(Boolean).join(' ');
   const queries = [
     `"${email}" site:linkedin.com/in/`,
     `"${fullName}" AND "${domain}" site:linkedin.com/in/`,
@@ -279,57 +369,69 @@ async function searchDDG(email, firstName, lastName, domain) {
  */
 export async function triangulateLinkedIn(params) {
   const { first_name, last_name, root_domain, legal_company_name, email } = params;
-  const fullName = `${first_name} ${last_name}`;
+  const fullName = [first_name, last_name].filter(Boolean).join(' ');
 
   console.log(`\n[search] Starting triangulation for: ${email}`);
   console.log(`[search] Target: ${fullName} @ ${legal_company_name}`);
 
-  // ① Nubela (direct email match - strongest signal)
-  console.log('[search] [1/6] Trying Nubela...');
-  let results = await searchNubela(email);
+  // ① Gemini Search Grounding (FREE — Google Search via LLM, works from Vercel IPs)
+  console.log('[search] [1/7] Trying Gemini Search Grounding...');
+  let results = await searchGemini(email, first_name, last_name, legal_company_name);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ② GitHub (free - find professionals with LinkedIn in bio)
-  console.log('[search] [2/6] Trying GitHub...');
+  // ② Nubela (direct email match - strongest signal)
+  console.log('[search] [2/7] Trying Nubela...');
+  results = await searchNubela(email);
+  if (results?.length > 0) return results;
+
+  await sleep(randomJitter(300, 800));
+
+  // ③ GitHub (free - find professionals with LinkedIn in bio)
+  console.log('[search] [3/7] Trying GitHub...');
   results = await searchGitHub(email, first_name, last_name);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ③ Apollo (email-to-profile lookup)
-  console.log('[search] [3/6] Trying Apollo...');
+  // ④ Apollo (email-to-profile lookup)
+  console.log('[search] [4/7] Trying Apollo...');
   results = await searchApollo(email, first_name, last_name);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ④ Hunter (email verification with data)
-  console.log('[search] [4/6] Trying Hunter...');
+  // ⑤ Hunter (email verification with data)
+  console.log('[search] [5/7] Trying Hunter...');
   results = await searchHunter(email, first_name, last_name);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ⑤ Pattern Prediction — surface candidates whose slug exists. The QA
+  // ⑥ Pattern Prediction — surface candidates whose slug exists. The QA
   //    gate will still validate identity + affiliation, so existence alone
   //    is not a verification (avoids /in/john-smith/ false positives).
-  console.log('[search] [5/6] Trying pattern prediction...');
-  const predicted = predictLinkedInUrl(email, first_name, last_name);
-  const patternHits = [];
-  for (const candidate of predicted) {
-    const exists = await verifyLinkedInUrl(candidate.url);
-    if (exists) {
-      candidate.source = { method: 'pattern', verified: true };
-      patternHits.push(candidate);
+  // Skip pattern prediction if last_name is empty (too many false-positive slugs).
+  let patternHits = [];
+  if (last_name) {
+    console.log('[search] [6/7] Trying pattern prediction...');
+    const predicted = predictLinkedInUrl(email, first_name, last_name);
+    for (const candidate of predicted) {
+      const exists = await verifyLinkedInUrl(candidate.url);
+      if (exists) {
+        candidate.source = { method: 'pattern', verified: true };
+        patternHits.push(candidate);
+      }
     }
+  } else {
+    console.log('[search] [6/7] Skipping pattern prediction (no last name)');
   }
 
   await sleep(randomJitter(500, 1500));
 
-  // ⑥ DuckDuckGo — additional candidates (merged with pattern hits)
-  console.log('[search] [6/6] Trying DuckDuckGo...');
+  // ⑦ DuckDuckGo — additional candidates (merged with pattern hits)
+  console.log('[search] [7/7] Trying DuckDuckGo...');
   const ddgResults = await searchDDG(email, first_name, last_name, root_domain);
 
   const merged = [...patternHits, ...(ddgResults ?? [])]

@@ -127,14 +127,15 @@ export async function fetchLinkedInMetaFallback(profileUrl) {
  */
 export async function llmQaValidation(parsed, meta) {
   const { first_name, last_name, known_aliases } = parsed;
-  const targetName = `${first_name} ${last_name}`;
+  const targetName = [first_name, last_name].filter(Boolean).join(' ');
 
   const userPrompt = [
     `Target Name: ${targetName}`,
+    last_name ? '' : `Note: Only first name is known (no last name available). Match first name + company affiliation.`,
     `Target Company Aliases: ${known_aliases.join(', ')}`,
     `Metadata Title: ${meta.title}`,
     `Metadata Description: ${meta.description}`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   const result = await callLLM(QA_SYSTEM_PROMPT, userPrompt);
 
