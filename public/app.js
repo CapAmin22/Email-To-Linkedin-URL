@@ -12,6 +12,7 @@ const state = {
   filteredRecords: [],
   bulkEmails: [],
   activeTab: 'single',
+  completionShown: false,
 };
 
 // ── Initialise ─────────────────────────────────────────────────────────────────
@@ -145,6 +146,7 @@ async function ingestEmails(emails) {
 
     const data = await res.json();
     state.jobId = data.job_id;
+    state.completionShown = false;
     localStorage.setItem('lv_job_id', data.job_id);
 
     showToast(`Queued ${data.queued} email${data.queued === 1 ? '' : 's'}`, 'success');
@@ -180,7 +182,10 @@ async function pollNow() {
 
     if (data.status === 'completed') {
       stopPolling();
-      markJobComplete(data);
+      if (!state.completionShown) {
+        state.completionShown = true;
+        markJobComplete(data);
+      }
       localStorage.removeItem('lv_job_id');
     }
 
