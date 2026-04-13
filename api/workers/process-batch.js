@@ -4,7 +4,7 @@
 
 import { supabase, logAudit, updateStatus, incrementJobCounter } from '../../lib/supabase.js';
 import { requireCronOrApiKey } from '../../lib/auth.js';
-import { isRoleBasedEmail, isNumericLocalPart, randomJitter, sleep } from '../../lib/utils.js';
+import { isRoleBasedEmail, isNumericLocalPart, randomJitter, sleep, companyMatchStrength } from '../../lib/utils.js';
 import { parseEmail } from './phase1-parse.js';
 import { triangulateLinkedIn } from './phase2-search.js';
 import { runQaGate } from './phase3-qa.js';
@@ -174,6 +174,34 @@ async function processRecord(record, results) {
     console.log(`[record ${recordId}] → manual_review: ${reason}`);
     return;
   }
+
+  // ── Pre-QA Re-ranking ─────────────────────────────────────────────────────
+  // Boost candidate scores using signals already available from search snippets:
+  // 1. Company alias in snippet title (+2.5) or description (+1.0)
+  // 2. URL slug exactly matches email local part slug (+1.5)
+  // 3. URL slug starts with firstName (+0.5)
+  // This ensures we QA the most likely correct profile first.
+  const emailSlug = email.split('@')[0].replace(/[._]/g, '-').toLowerCase();
+  const firstNameLower = parsed.first_name.toLowerCase();
+
+  for (const candidate of candidates) {
+    // Company snippet boost
+    const strength = companyMatchStrength(parsed.known_aliases, candidate.title || '', candidate.description || '');
+    if (strength === 'title')       candidate.score += 2.5;
+    else if (strength === 'description') candidate.score += 1.0;
+
+    // Slug match boost — email local part often = LinkedIn URL slug
+    const urlSlug = (candidate.url.match(/\/in\/([\w-]+)\/?$/)?.[1] || '').toLowerCase();
+    if (urlSlug === emailSlug)          candidate.score += 1.5;
+    else if (urlSlug.startsWith(firstNameLower)) candidate.score += 0.5;
+  }
+
+  // Re-sort with enriched scores — best candidate goes first
+  candidates.sort((a, b) => b.score - a.score);
+  console.log(`[record ${record.id}] Candidate ranking after re-score:`);
+  candidates.slice(0, 3).forEach((c, i) => {
+    console.log(`  #${i + 1} [score:${c.score.toFixed(1)}] ${c.url} | "${(c.title || '').slice(0, 60)}"`);
+  });
 
   // ── Phase 3: QA Gate ───────────────────────────────────────────────────────
   // Walk candidates in score order until one is verified or all fail

@@ -3,7 +3,7 @@
 
 import { callLLM } from '../../lib/llm.js';
 import { QA_SYSTEM_PROMPT } from '../../lib/prompts.js';
-import { preQaChecks } from '../../lib/utils.js';
+import { preQaChecks, companyMatchStrength } from '../../lib/utils.js';
 
 const FETCH_TIMEOUT_MS = 15_000;
 
@@ -180,10 +180,9 @@ export async function llmQaValidation(parsed, meta) {
 
   // ── Programmatic safety net ──────────────────────────────────────────────
   // LLMs sometimes hallucinate and ignore Rule 2 (company match).
-  // We programmatically verify that at least one company alias appears
-  // in the title OR description. If not, override LLM's verdict.
-  const combinedText = `${meta.title} ${meta.description}`;
-  const companyFoundInMeta = hasAnyCompanyMention(known_aliases, combinedText);
+  // Use companyMatchStrength to distinguish title vs description match.
+  const strength = companyMatchStrength(known_aliases, meta.title, meta.description);
+  const companyFoundInMeta = strength !== 'none';
 
   if (isVerified && !companyFoundInMeta) {
     console.log('[qa] Safety net: LLM said verified but no company alias found in metadata. Overriding to false.');
@@ -191,17 +190,24 @@ export async function llmQaValidation(parsed, meta) {
     reason = `Name may match but no Target Company alias found in title or description. LLM overridden by safety net.`;
   }
 
+  // Annotate when company is only in description (weaker signal — may be past employer)
+  if (isVerified && strength === 'description') {
+    reason = `${reason} (Note: company found in description only — current role may differ)`;
+    console.log('[qa] Company found in description only — weaker match');
+  }
+
   // ── Job-change recovery ──────────────────────────────────────────────────
   // If LLM says no, but we have PERFECT name match (first+last) AND company
   // IS mentioned somewhere in the metadata, it may be a job change.
   if (!isVerified && last_name && isPerfectNameMatch(first_name, last_name, meta.title)) {
     if (companyFoundInMeta) {
+      const loc = strength === 'title' ? 'title' : 'description';
       isVerified = true;
-      reason = `Perfect name match (${targetName}) with company reference found in metadata; may have changed roles or companies since ${known_aliases[0]}.`;
+      reason = `Perfect name match (${targetName}) with company reference found in ${loc}; may have changed roles or title.`;
     }
   }
 
-  return { is_verified: isVerified, reason };
+  return { is_verified: isVerified, reason, companyMatchStrength: strength };
 }
 
 /**

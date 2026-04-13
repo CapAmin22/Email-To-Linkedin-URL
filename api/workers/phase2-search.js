@@ -14,7 +14,7 @@ const NUBELA_KEY = process.env.API_NUBELA || process.env.PROXYCURL_API_KEY;
 
 const SCRAPER_API_KEY = process.env.SCRAPER_API_KEY;
 const SERPER_API_KEY = process.env.SERPER_API_KEY || process.env.SERPER_API;
-const GOOGLE_CSE_KEY = process.env.GOOGLE_CSE_API_KEY;
+const GOOGLE_CSE_KEY = process.env.GOOGLE_CSE_KEY || process.env.GOOGLE_CSE_API_KEY;
 const GOOGLE_CSE_CX = process.env.GOOGLE_CSE_CX;
 
 // ─ LLM-Powered X-Ray Query Generator ────────────────────────────────────────
@@ -44,13 +44,20 @@ async function generateXrayQueries(email, firstName, lastName, companyName, doma
   const localPart = email.split('@')[0];
   const fullName = [firstName, lastName].filter(Boolean).join(' ');
 
+  // If firstName is a single initial (e.g. "j.smith@co.com" → first_name="J"),
+  // ask LLM to expand to common full first names for better coverage.
+  const isInitialOnly = firstName.length === 1;
+  const initialNote = isInitialOnly
+    ? `\nIMPORTANT: The first name is only an initial "${firstName}". Expand to the 3 most common full names for initial "${firstName}" with last name "${lastName}" (e.g. James, John, Jennifer). Generate queries using EACH expanded name, covering the most likely full names.`
+    : '';
+
   const userPrompt = `Generate 5 LinkedIn X-ray queries for:
 - Email: ${email}
-- First Name: ${firstName}
+- First Name: ${firstName}${isInitialOnly ? ' (INITIAL ONLY — expand to full names)' : ''}
 - Last Name: ${lastName || '(unknown)'}
 - Company: ${companyName}
 - Domain: ${domain}
-- Email local part: ${localPart}`;
+- Email local part: ${localPart}${initialNote}`;
 
   try {
     const result = await callLLM(XRAY_SYSTEM_PROMPT, userPrompt);
@@ -116,8 +123,16 @@ function filterByName(results, firstName, lastName) {
   return [];
 }
 
+// Query weights: q0 (name+domain) and q3 (slug+domain) are most precise.
+// q2 (name only) is weakest — common names return too many false positives.
+// q1 (name+company) is medium — company name can be ambiguous.
+// q4 (unquoted) is lowest — broadest, most noise.
+const QUERY_WEIGHTS = [2.0, 1.5, 0.5, 2.0, 0.8];
+
 // ─ Shared: Execute queries via a Google search backend ───────────────────────
 function collectLinkedInResults(organicResults, queryIndex, urlMap, method) {
+  const weight = QUERY_WEIGHTS[queryIndex] ?? 1.0;
+
   for (const result of organicResults) {
     const url = normalizeLinkedInUrl(result.link || result.url);
     if (!url) continue;
@@ -133,7 +148,8 @@ function collectLinkedInResults(organicResults, queryIndex, urlMap, method) {
       });
     }
     const entry = urlMap.get(url);
-    entry.score += 1;
+    // Weighted score: domain+name queries (q0, q3) count more than name-only (q2)
+    entry.score += weight;
     if (!entry.vectors.includes(queryIndex)) entry.vectors.push(queryIndex);
     const title = result.title || '';
     const desc = result.snippet || result.description || '';
