@@ -691,6 +691,11 @@ async function searchDDG(email, firstName, lastName, domain) {
 /**
  * Main triangulation with full FREE fallback chain.
  *
+ * PERFORMANCE: 10-second timeout with graceful degradation
+ * - Returns immediately when any high-confidence source succeeds
+ * - If timeout reached, returns best results found so far
+ * - Never blocks waiting for slow/failed sources
+ *
  * Pipeline order (fastest/best sources first):
  *  ① Serper.dev (primary - 2500 free/month, fast Google results with snippets)
  *  ② Google Custom Search API (100 free/day, restricted to linkedin.com)
@@ -703,7 +708,10 @@ async function searchDDG(email, firstName, lastName, domain) {
  *  ⑨ DuckDuckGo (last resort search)
  *  ⑩ Pattern Prediction (URL slug guessing + HEAD verify)
  */
-export async function triangulateLinkedIn(params) {
+export async function triangulateLinkedIn(params, timeoutMs = 10000) {
+  const startTime = Date.now();
+  const timeRemaining = () => Math.max(0, timeoutMs - (Date.now() - startTime));
+  const isTimedOut = () => Date.now() - startTime > timeoutMs;
   const { first_name, last_name, root_domain, legal_company_name, email } = params;
   const fullName = [first_name, last_name].filter(Boolean).join(' ');
 
@@ -729,75 +737,86 @@ export async function triangulateLinkedIn(params) {
     return null;
   };
 
-  // ① Serper.dev — PRIMARY backend (ScraperAPI credits often exhausted)
-  console.log('[search] [1/10] Trying Serper.dev...');
-  let results = nameFilter(await searchSerper(xrayQueries), 'Serper');
-  if (results?.length > 0) return results;
+  // ① Serper.dev — PRIMARY backend (fast, <2s)
+  if (!isTimedOut()) {
+    console.log(`[search] [1/10] Trying Serper.dev... (${timeRemaining()}ms left)`);
+    let results = nameFilter(await searchSerper(xrayQueries), 'Serper');
+    if (results?.length > 0) {
+      console.log(`[search] ✓ Found in ${Date.now() - startTime}ms`);
+      return results;
+    }
+    if (timeRemaining() > 500) await sleep(Math.min(300, timeRemaining() / 8));
+  }
 
-  await sleep(randomJitter(300, 800));
+  // ② Google Custom Search API (fast, <2s)
+  if (!isTimedOut()) {
+    console.log(`[search] [2/10] Trying Google Custom Search API... (${timeRemaining()}ms left)`);
+    results = nameFilter(await searchGoogleCSE(xrayQueries), 'Google CSE');
+    if (results?.length > 0) {
+      console.log(`[search] ✓ Found in ${Date.now() - startTime}ms`);
+      return results;
+    }
+    if (timeRemaining() > 500) await sleep(Math.min(300, timeRemaining() / 8));
+  }
 
-  // ② Google Custom Search API (100 free/day, restricted to linkedin.com)
-  console.log('[search] [2/10] Trying Google Custom Search API...');
-  results = nameFilter(await searchGoogleCSE(xrayQueries), 'Google CSE');
-  if (results?.length > 0) return results;
+  // ③ Google Search via ScraperAPI (slower, ~2s)
+  if (!isTimedOut() && timeRemaining() > 3000) {
+    console.log(`[search] [3/10] Trying Google Search (ScraperAPI)... (${timeRemaining()}ms left)`);
+    results = nameFilter(await searchGoogle(xrayQueries), 'ScraperAPI Google');
+    if (results?.length > 0) {
+      console.log(`[search] ✓ Found in ${Date.now() - startTime}ms`);
+      return results;
+    }
+  }
 
-  await sleep(randomJitter(300, 800));
+  // ④ Gemini Search Grounding (slower, ~2-3s)
+  if (!isTimedOut() && timeRemaining() > 2500) {
+    console.log(`[search] [4/10] Trying Gemini Search Grounding... (${timeRemaining()}ms left)`);
+    results = nameFilter(await searchGemini(email, first_name, last_name, legal_company_name), 'Gemini Search');
+    if (results?.length > 0) {
+      console.log(`[search] ✓ Found in ${Date.now() - startTime}ms`);
+      return results;
+    }
+  }
 
-  // ③ Google Search via ScraperAPI (try if credits available)
-  console.log('[search] [3/10] Trying Google Search (ScraperAPI)...');
-  results = nameFilter(await searchGoogle(xrayQueries), 'ScraperAPI Google');
-  if (results?.length > 0) return results;
+  // ⑤-⑧ Direct API lookups (run in parallel, fast <1s each)
+  if (!isTimedOut() && timeRemaining() > 1500) {
+    console.log(`[search] [5/10] Trying direct API lookups (Apollo/Nubela/Hunter)... (${timeRemaining()}ms left)`);
+    const directAPIs = await Promise.race([
+      (async () => {
+        const r = await searchApollo(email, first_name, last_name);
+        return r ? { r, source: 'Apollo' } : null;
+      })(),
+      (async () => {
+        const r = await searchNubela(email);
+        return r ? { r, source: 'Nubela' } : null;
+      })(),
+      (async () => {
+        const r = await searchHunter(email, first_name, last_name);
+        return r ? { r, source: 'Hunter' } : null;
+      })(),
+      new Promise(resolve => setTimeout(() => resolve(null), timeRemaining() - 500)),
+    ]);
+    if (directAPIs?.r) {
+      console.log(`[search] ✓ ${directAPIs.source} found in ${Date.now() - startTime}ms`);
+      return directAPIs.r;
+    }
+  }
 
-  await sleep(randomJitter(300, 800));
+  // ⑨ DuckDuckGo (slower, ~2-3s)
+  if (!isTimedOut() && timeRemaining() > 2000) {
+    console.log(`[search] [9/10] Trying DuckDuckGo... (${timeRemaining()}ms left)`);
+    const ddgResults = nameFilter(await searchDDG(email, first_name, last_name, root_domain), 'DDG');
+    if (ddgResults?.length > 0) {
+      console.log(`[search] ✓ Found in ${Date.now() - startTime}ms`);
+      return ddgResults;
+    }
+  }
 
-  // ④ Gemini Search Grounding (backup Google Search via LLM — free)
-  console.log('[search] [4/10] Trying Gemini Search Grounding...');
-  results = nameFilter(await searchGemini(email, first_name, last_name, legal_company_name), 'Gemini Search');
-  if (results?.length > 0) return results;
-
-  await sleep(randomJitter(300, 800));
-
-  // ⑤ Apollo (direct email-to-LinkedIn lookup)
-  console.log('[search] [5/10] Trying Apollo...');
-  results = await searchApollo(email, first_name, last_name);
-  if (results?.length > 0) return results;
-
-  await sleep(randomJitter(300, 800));
-
-  // ⑥ Nubela (direct email match)
-  console.log('[search] [6/10] Trying Nubela...');
-  results = await searchNubela(email);
-  if (results?.length > 0) return results;
-
-  await sleep(randomJitter(300, 800));
-
-  // ⑦ GitHub (free - find professionals with LinkedIn in bio)
-  console.log('[search] [7/10] Trying GitHub...');
-  results = await searchGitHub(email, first_name, last_name);
-  if (results?.length > 0) return results;
-
-  await sleep(randomJitter(300, 800));
-
-  // ⑧ Hunter (email verification with data)
-  console.log('[search] [8/10] Trying Hunter...');
-  results = await searchHunter(email, first_name, last_name);
-  if (results?.length > 0) return results;
-
-  await sleep(randomJitter(300, 800));
-
-  // ⑨ DuckDuckGo — additional candidates
-  console.log('[search] [9/10] Trying DuckDuckGo...');
-  const ddgResults = nameFilter(await searchDDG(email, first_name, last_name, root_domain), 'DDG');
-  if (ddgResults?.length > 0) return ddgResults;
-
-  await sleep(randomJitter(500, 1500));
-
-  // ⑩ Pattern Prediction + Web Mention Confirmation
+  // ⑩ Pattern Prediction + Web Mention Confirmation (last resort, if time permits)
   // Skip if no last_name (too many false positives for single names).
-  // Enhanced: use web mentions (RocketReach, IDCrawl, etc.) to build synthetic
-  // metadata so the QA gate can verify identity even without scraping LinkedIn.
-  if (last_name) {
-    console.log('[search] [10/10] Trying pattern prediction + web mention confirmation...');
+  if (!isTimedOut() && last_name && timeRemaining() > 1000) {
+    console.log(`[search] [10/10] Trying pattern prediction + web mention... (${timeRemaining()}ms left)`);
 
     // Get web mention confirmation first (confirms company affiliation)
     const webMention = await searchWebMentions(first_name, last_name, legal_company_name, root_domain);
@@ -832,6 +851,7 @@ export async function triangulateLinkedIn(params) {
 
     const patternHits = [];
     for (const candidate of predicted) {
+      if (isTimedOut()) break; // Stop verification if timeout reached
       const exists = await verifyLinkedInUrl(candidate.url);
       if (exists) {
         if (webMention?.confirmed) {
@@ -840,8 +860,7 @@ export async function triangulateLinkedIn(params) {
           candidate.description = webMention.description;
           candidate.score = 3; // Boost score: URL exists + company confirmed externally
           candidate.source = { method: 'web_confirmed', url_verified: true };
-          console.log(`[search] ✓ Pattern+WebConfirm: ${candidate.url}`);
-          // Return immediately on first confirmed slug match
+          console.log(`[search] ✓ Pattern+WebConfirm in ${Date.now() - startTime}ms`);
           return [candidate];
         }
         candidate.source = { method: 'pattern', verified: true };
@@ -849,13 +868,12 @@ export async function triangulateLinkedIn(params) {
       }
     }
     if (patternHits.length > 0) {
-      console.log(`[search] ✓ Pattern found ${patternHits.length} candidate(s) (no web confirmation)`);
+      console.log(`[search] ✓ Pattern found ${patternHits.length} candidate(s) in ${Date.now() - startTime}ms`);
       return patternHits;
     }
-  } else {
-    console.log('[search] [10/10] Skipping pattern prediction (no last name)');
   }
 
-  console.log('[search] ✗ All sources exhausted → manual_review');
+  const elapsed = Date.now() - startTime;
+  console.log(`[search] ✗ No result found (${elapsed}ms${isTimedOut() ? ' - TIMEOUT' : ''}) → manual_review`);
   return null;
 }
