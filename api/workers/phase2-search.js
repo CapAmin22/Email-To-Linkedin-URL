@@ -27,17 +27,18 @@ const XRAY_SYSTEM_PROMPT = `You are a LinkedIn profile search expert. Generate e
 Rules:
 1. Every query MUST start with: site:linkedin.com/in
 2. Use double quotes around names and companies for exact match
-3. Vary your approach across queries:
-   - Query 1: Full name + company name (most specific)
-   - Query 2: Full name + company domain/variations (handles rebranding)
+3. Vary your approach across 5 queries:
+   - Query 1: Full name + company DOMAIN (e.g., "bubble.io" not just "Bubble") — most precise
+   - Query 2: Full name + company name (handles cases where domain != company name)
    - Query 3: Full name only (catches people who changed companies)
-   - Query 4: Email local part as potential LinkedIn slug pattern (e.g., "john.doe" → "john-doe")
-   - Query 5: Creative variation (initials, name without quotes, company abbreviation)
-4. For single-name emails (no last name), focus on first name + company combinations
-5. For generic company names (like "Bubble", "Slack", "Monday"), also include the domain form
-6. Return ONLY a JSON array of 5 query strings. No explanation.
+   - Query 4: Email local part slug + domain (e.g., "amrita-mutha" "bubble.io")
+   - Query 5: First name + last name as individual terms + domain (no quotes around full name)
+4. CRITICAL: For generic company names (Bubble, Slack, Monday, Linear, Motion, etc.), ALWAYS use the domain form (bubble.io, slack.com) in queries 1 and 4 — never rely on the short name alone as it causes false positives
+5. For single-name emails (no last name), use first name + domain + company
+6. Email local part slug: convert dots/underscores to hyphens (amrita.mutha → amrita-mutha)
+7. Return ONLY a JSON array of exactly 5 query strings. No explanation, no markdown.
 
-Example output: ["site:linkedin.com/in \\"John Doe\\" \\"Acme Corp\\"", "site:linkedin.com/in \\"John Doe\\" acme.com", ...]`;
+Example output: ["site:linkedin.com/in \\"Amrita Mutha\\" \\"bubble.io\\"", "site:linkedin.com/in \\"Amrita Mutha\\" \\"Bubble\\"", "site:linkedin.com/in \\"Amrita Mutha\\"", "site:linkedin.com/in \\"amrita-mutha\\" \\"bubble.io\\"", "site:linkedin.com/in Amrita Mutha bubble.io"]`;
 
 async function generateXrayQueries(email, firstName, lastName, companyName, domain) {
   const localPart = email.split('@')[0];
