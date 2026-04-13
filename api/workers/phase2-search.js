@@ -86,6 +86,36 @@ async function generateXrayQueries(email, firstName, lastName, companyName, doma
   return queries;
 }
 
+// ─ Name-match filter: only keep results where title contains target name ──────
+// This prevents false positives from unquoted queries that return random people.
+// Both first AND last name must appear in the title for a result to be trusted.
+// If lastName is empty (single-name email), only firstName must match.
+function filterByName(results, firstName, lastName) {
+  if (!firstName) return results; // No name to filter on
+  const firstLower = firstName.toLowerCase();
+  const lastLower = lastName ? lastName.toLowerCase() : '';
+
+  const nameMatches = results.filter(r => {
+    const titleLower = (r.title || '').toLowerCase();
+    const hasFirst = titleLower.includes(firstLower);
+    const hasLast = !lastLower || titleLower.includes(lastLower);
+    return hasFirst && hasLast;
+  });
+
+  // If we have strict name matches, only return those
+  if (nameMatches.length > 0) return nameMatches;
+
+  // Soft fallback: if no full-name match but some title has firstName (common name queries)
+  // This handles cases where the person's name isn't in the title due to localization
+  const firstNameMatches = results.filter(r =>
+    (r.title || '').toLowerCase().includes(firstLower)
+  );
+  if (firstNameMatches.length > 0 && !lastLower) return firstNameMatches;
+
+  // Nothing matched — don't return misleading results
+  return [];
+}
+
 // ─ Shared: Execute queries via a Google search backend ───────────────────────
 function collectLinkedInResults(organicResults, queryIndex, urlMap, method) {
   for (const result of organicResults) {
@@ -687,30 +717,42 @@ export async function triangulateLinkedIn(params) {
   );
   console.log('[search] Queries:', xrayQueries.map((q, i) => `\n  q${i}: ${q}`).join(''));
 
+  // Helper: apply name filter + log result
+  const nameFilter = (raw, sourceLabel) => {
+    if (!raw?.length) return null;
+    const filtered = filterByName(raw, first_name, last_name);
+    if (filtered.length > 0) {
+      console.log(`[search] ✓ ${sourceLabel} found ${filtered.length} name-matched result(s)`);
+      return filtered;
+    }
+    console.log(`[search] ✗ ${sourceLabel} found ${raw.length} result(s) but NONE match name "${[first_name, last_name].filter(Boolean).join(' ')}" — skipping`);
+    return null;
+  };
+
   // ① Serper.dev — PRIMARY backend (ScraperAPI credits often exhausted)
   console.log('[search] [1/10] Trying Serper.dev...');
-  let results = await searchSerper(xrayQueries);
+  let results = nameFilter(await searchSerper(xrayQueries), 'Serper');
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
   // ② Google Custom Search API (100 free/day, restricted to linkedin.com)
   console.log('[search] [2/10] Trying Google Custom Search API...');
-  results = await searchGoogleCSE(xrayQueries);
+  results = nameFilter(await searchGoogleCSE(xrayQueries), 'Google CSE');
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
   // ③ Google Search via ScraperAPI (try if credits available)
   console.log('[search] [3/10] Trying Google Search (ScraperAPI)...');
-  results = await searchGoogle(xrayQueries);
+  results = nameFilter(await searchGoogle(xrayQueries), 'ScraperAPI Google');
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
   // ④ Gemini Search Grounding (backup Google Search via LLM — free)
   console.log('[search] [4/10] Trying Gemini Search Grounding...');
-  results = await searchGemini(email, first_name, last_name, legal_company_name);
+  results = nameFilter(await searchGemini(email, first_name, last_name, legal_company_name), 'Gemini Search');
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
@@ -745,7 +787,7 @@ export async function triangulateLinkedIn(params) {
 
   // ⑨ DuckDuckGo — additional candidates
   console.log('[search] [9/10] Trying DuckDuckGo...');
-  const ddgResults = await searchDDG(email, first_name, last_name, root_domain);
+  const ddgResults = nameFilter(await searchDDG(email, first_name, last_name, root_domain), 'DDG');
   if (ddgResults?.length > 0) return ddgResults;
 
   await sleep(randomJitter(500, 1500));
