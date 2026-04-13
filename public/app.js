@@ -55,16 +55,165 @@ function switchTab(tab) {
   });
 }
 
-// ── Single submit ─────────────────────────────────────────────────────────────
+// ── Single submit — uses instant inline API (no queue, result in <8s) ─────────
 async function submitSingle() {
-  const email = document.getElementById('single-email-input').value.trim();
+  const emailInput = document.getElementById('single-email-input');
+  const email = emailInput.value.trim();
   if (!email) return showToast('Enter an email address', 'error');
   if (!email.includes('@')) return showToast('Invalid email format', 'error');
   if (!state.apiKey) {
     showToast('API key not configured', 'error');
     return;
   }
-  await ingestEmails([email]);
+
+  // Show loading state on the Verify button
+  const btn = document.getElementById('verify-btn');
+  const originalBtnHtml = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<svg class="animate-spin w-4 h-4 mr-2 inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>Searching…`;
+  }
+
+  // Show instant result panel
+  showInstantPanel(email);
+
+  const start = Date.now();
+
+  try {
+    const res = await apiFetch('/api/verify-instant', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    });
+
+    const data = await res.json();
+    const elapsed = Date.now() - start;
+
+    renderInstantResult(data, elapsed);
+
+  } catch (err) {
+    renderInstantResult({ status: 'error', email, reason: err.message }, Date.now() - start);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalBtnHtml || 'Verify';
+    }
+  }
+}
+
+function showInstantPanel(email) {
+  let panel = document.getElementById('instant-result-panel');
+  if (!panel) {
+    // Create panel if it doesn't exist
+    const section = document.getElementById('dashboard-section') || document.querySelector('.container') || document.body;
+    panel = document.createElement('div');
+    panel.id = 'instant-result-panel';
+    panel.className = 'mt-6 rounded-2xl border border-zinc-800 bg-zinc-900/60 backdrop-blur-sm p-6';
+    // Insert after the ingest section
+    const ingestSection = document.getElementById('ingest-section');
+    if (ingestSection && ingestSection.parentNode) {
+      ingestSection.parentNode.insertBefore(panel, ingestSection.nextSibling);
+    } else {
+      document.body.appendChild(panel);
+    }
+  }
+  panel.classList.remove('hidden');
+  panel.innerHTML = `
+    <div class="flex items-center gap-3 mb-4">
+      <div class="w-2 h-2 rounded-full bg-blue-400 animate-pulse"></div>
+      <span class="text-sm font-medium text-zinc-300">Searching LinkedIn for <span class="text-indigo-400">${escapeHtml(email)}</span>…</span>
+    </div>
+    <div class="space-y-2">
+      <div class="h-4 bg-zinc-800 rounded animate-pulse w-3/4"></div>
+      <div class="h-4 bg-zinc-800 rounded animate-pulse w-1/2"></div>
+      <div class="h-4 bg-zinc-800 rounded animate-pulse w-2/3"></div>
+    </div>
+    <p class="text-xs text-zinc-600 mt-3">Checking 10 sources across Google, LinkedIn, Apollo…</p>
+  `;
+}
+
+function renderInstantResult(data, elapsedMs) {
+  const panel = document.getElementById('instant-result-panel');
+  if (!panel) return;
+
+  const statusConfig = {
+    verified:      { color: 'emerald', label: 'Verified', icon: '✓' },
+    manual_review: { color: 'amber',   label: 'Not Found', icon: '⚠' },
+    error:         { color: 'rose',    label: 'Error',     icon: '✗' },
+  };
+  const cfg = statusConfig[data.status] || statusConfig.error;
+  const elapsedSec = (elapsedMs / 1000).toFixed(1);
+
+  const linkedinCell = data.linkedin_url
+    ? `<a href="${escapeHtml(data.linkedin_url)}" target="_blank" rel="noopener"
+         class="inline-flex items-center gap-2 text-indigo-400 hover:text-indigo-300 font-medium text-sm transition-colors">
+         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+           <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+           <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+         </svg>
+         ${escapeHtml(data.linkedin_url.replace('https://www.linkedin.com/in/', '').replace(/\/$/, ''))}
+       </a>
+       <button onclick="copyToClipboard('${escapeHtml(data.linkedin_url)}')"
+         class="ml-2 text-xs text-zinc-500 hover:text-zinc-300 border border-zinc-700 rounded px-2 py-0.5 transition-colors">
+         Copy URL
+       </button>`
+    : `<span class="text-zinc-600 text-sm">No profile found</span>`;
+
+  const personInfo = (data.first_name || data.last_name)
+    ? `<span class="text-zinc-400">${escapeHtml([data.first_name, data.last_name].filter(Boolean).join(' '))}</span>
+       ${data.company ? `<span class="text-zinc-600">·</span> <span class="text-zinc-500">${escapeHtml(data.company)}</span>` : ''}`
+    : '';
+
+  panel.innerHTML = `
+    <div class="flex items-center justify-between mb-4">
+      <div class="flex items-center gap-2">
+        <span class="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full
+          bg-${cfg.color}-950/60 text-${cfg.color}-400 border border-${cfg.color}-800">
+          ${cfg.icon} ${cfg.label}
+        </span>
+        ${personInfo ? `<span class="text-sm">${personInfo}</span>` : ''}
+      </div>
+      <span class="text-xs text-zinc-600">${elapsedSec}s</span>
+    </div>
+
+    <div class="space-y-3">
+      ${data.linkedin_url ? `
+      <div class="flex items-start gap-3 p-3 rounded-xl bg-zinc-800/50 border border-zinc-700/50">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" class="text-indigo-400 mt-0.5 shrink-0">
+          <path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/>
+        </svg>
+        <div class="min-w-0 flex-1">
+          ${linkedinCell}
+          ${data.meta_title ? `<p class="text-xs text-zinc-500 mt-1 truncate">${escapeHtml(data.meta_title)}</p>` : ''}
+        </div>
+      </div>` : ''}
+
+      ${data.reason ? `
+      <div class="flex items-start gap-2 text-xs text-zinc-500 bg-zinc-800/30 rounded-lg px-3 py-2">
+        <span class="text-zinc-600 shrink-0">Reason:</span>
+        <span>${escapeHtml(data.reason)}</span>
+      </div>` : ''}
+    </div>
+
+    <div class="mt-4 flex items-center gap-3">
+      ${data.status === 'manual_review' || data.status === 'error' ? `
+        <button onclick="retryInstant('${escapeHtml(data.email)}')"
+          class="text-xs text-zinc-400 hover:text-indigo-400 border border-zinc-700 hover:border-indigo-700 rounded-lg px-3 py-1.5 transition-colors flex items-center gap-1.5">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.51"/>
+          </svg>
+          Retry
+        </button>` : ''}
+      <button onclick="document.getElementById('instant-result-panel').classList.add('hidden'); document.getElementById('single-email-input').value = ''; document.getElementById('single-email-input').focus();"
+        class="text-xs text-zinc-600 hover:text-zinc-400 transition-colors">
+        Search another email →
+      </button>
+    </div>
+  `;
+}
+
+async function retryInstant(email) {
+  document.getElementById('single-email-input').value = email;
+  await submitSingle();
 }
 
 // ── Bulk CSV handling ─────────────────────────────────────────────────────────
