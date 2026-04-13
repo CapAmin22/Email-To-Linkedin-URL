@@ -13,7 +13,7 @@ const HUNTER_KEY = process.env.HUNTER_API_KEY;
 const NUBELA_KEY = process.env.API_NUBELA || process.env.PROXYCURL_API_KEY;
 
 const SCRAPER_API_KEY = process.env.SCRAPER_API_KEY;
-const SERPER_API_KEY = process.env.SERPER_API_KEY;
+const SERPER_API_KEY = process.env.SERPER_API_KEY || process.env.SERPER_API;
 const GOOGLE_CSE_KEY = process.env.GOOGLE_CSE_API_KEY;
 const GOOGLE_CSE_CX = process.env.GOOGLE_CSE_CX;
 
