@@ -65,17 +65,23 @@ async function generateXrayQueries(email, firstName, lastName, companyName, doma
 
   // Fallback to hardcoded queries if LLM fails
   console.log('[search] Using fallback hardcoded queries');
+  const slug = localPart.replace(/[._]/g, '-');
   const queries = [];
   if (lastName) {
-    queries.push(`site:linkedin.com/in "${firstName} ${lastName}" "${companyName}"`);
+    // q1: Full name + domain (most precise for generic company names)
     queries.push(`site:linkedin.com/in "${firstName} ${lastName}" "${domain}"`);
+    // q2: Full name + company name (broader)
+    queries.push(`site:linkedin.com/in "${firstName} ${lastName}" "${companyName}"`);
+    // q3: Full name only (catches job changers)
     queries.push(`site:linkedin.com/in "${firstName} ${lastName}"`);
-    queries.push(`site:linkedin.com/in "${localPart.replace(/[._]/g, '-')}" "${companyName}"`);
-    queries.push(`site:linkedin.com/in ${firstName} ${lastName} ${companyName}`);
+    // q4: Email slug + domain (handles non-standard name formats)
+    queries.push(`site:linkedin.com/in "${slug}" "${domain}"`);
+    // q5: Unquoted full name + domain
+    queries.push(`site:linkedin.com/in ${firstName} ${lastName} ${domain}`);
   } else {
-    queries.push(`site:linkedin.com/in "${firstName}" "${companyName}"`);
     queries.push(`site:linkedin.com/in "${firstName}" "${domain}"`);
-    queries.push(`site:linkedin.com/in "${localPart}" "${companyName}"`);
+    queries.push(`site:linkedin.com/in "${firstName}" "${companyName}"`);
+    queries.push(`site:linkedin.com/in "${localPart}" "${domain}"`);
   }
   return queries;
 }
@@ -592,10 +598,17 @@ async function searchDDG(email, firstName, lastName, domain) {
 /**
  * Main triangulation with full FREE fallback chain.
  *
- * The key innovation: LLM generates 5 diverse X-ray queries tailored to
- * each person. These queries are then executed across multiple Google search
- * backends (ScraperAPI, Serper). URLs that appear across multiple queries
- * get higher scores, making the top result very likely to be correct.
+ * Pipeline order (fastest/best sources first):
+ *  ① Serper.dev (primary - 2500 free/month, fast Google results with snippets)
+ *  ② Google Custom Search API (100 free/day, restricted to linkedin.com)
+ *  ③ Google via ScraperAPI (structured, reliable — only if credits remain)
+ *  ④ Gemini Search Grounding (free Google search via LLM)
+ *  ⑤ Apollo (direct email-to-LinkedIn lookup)
+ *  ⑥ Nubela (direct email lookup)
+ *  ⑦ GitHub (LinkedIn URL in bio)
+ *  ⑧ Hunter (email verification data)
+ *  ⑨ DuckDuckGo (last resort search)
+ *  ⑩ Pattern Prediction (URL slug guessing + HEAD verify)
  */
 export async function triangulateLinkedIn(params) {
   const { first_name, last_name, root_domain, legal_company_name, email } = params;
@@ -605,73 +618,80 @@ export async function triangulateLinkedIn(params) {
   console.log(`[search] Target: ${fullName} @ ${legal_company_name}`);
 
   // Step 0: Generate diverse X-ray queries via LLM
-  console.log('[search] [0/9] Generating X-ray queries via LLM...');
+  console.log('[search] [0/10] Generating X-ray queries via LLM...');
   const xrayQueries = await generateXrayQueries(
     email, first_name, last_name, legal_company_name, root_domain
   );
   console.log('[search] Queries:', xrayQueries.map((q, i) => `\n  q${i}: ${q}`).join(''));
 
-  // ① Google Search via ScraperAPI (structured, reliable, gets title+snippet)
-  console.log('[search] [1/9] Trying Google Search (ScraperAPI)...');
-  let results = await searchGoogle(xrayQueries);
+  // ① Serper.dev — PRIMARY backend (ScraperAPI credits often exhausted)
+  console.log('[search] [1/10] Trying Serper.dev...');
+  let results = await searchSerper(xrayQueries);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ② Serper.dev (fast, 2500 free queries, second Google backend)
-  console.log('[search] [2/10] Trying Serper.dev...');
-  results = await searchSerper(xrayQueries);
-  if (results?.length > 0) return results;
-
-  await sleep(randomJitter(300, 800));
-
-  // ③ Google Custom Search API (100 free/day, restricted to linkedin.com)
-  console.log('[search] [3/10] Trying Google Custom Search API...');
+  // ② Google Custom Search API (100 free/day, restricted to linkedin.com)
+  console.log('[search] [2/10] Trying Google Custom Search API...');
   results = await searchGoogleCSE(xrayQueries);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ④ Gemini Search Grounding (backup Google Search via LLM)
+  // ③ Google Search via ScraperAPI (try if credits available)
+  console.log('[search] [3/10] Trying Google Search (ScraperAPI)...');
+  results = await searchGoogle(xrayQueries);
+  if (results?.length > 0) return results;
+
+  await sleep(randomJitter(300, 800));
+
+  // ④ Gemini Search Grounding (backup Google Search via LLM — free)
   console.log('[search] [4/10] Trying Gemini Search Grounding...');
   results = await searchGemini(email, first_name, last_name, legal_company_name);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ④ Nubela (direct email match)
-  console.log('[search] [5/10] Trying Nubela...');
-  results = await searchNubela(email);
-  if (results?.length > 0) return results;
-
-  await sleep(randomJitter(300, 800));
-
-  // ⑤ GitHub (free - find professionals with LinkedIn in bio)
-  console.log('[search] [6/10] Trying GitHub...');
-  results = await searchGitHub(email, first_name, last_name);
-  if (results?.length > 0) return results;
-
-  await sleep(randomJitter(300, 800));
-
-  // ⑥ Apollo (email-to-profile lookup)
-  console.log('[search] [7/10] Trying Apollo...');
+  // ⑤ Apollo (direct email-to-LinkedIn lookup)
+  console.log('[search] [5/10] Trying Apollo...');
   results = await searchApollo(email, first_name, last_name);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ⑦ Hunter (email verification with data)
+  // ⑥ Nubela (direct email match)
+  console.log('[search] [6/10] Trying Nubela...');
+  results = await searchNubela(email);
+  if (results?.length > 0) return results;
+
+  await sleep(randomJitter(300, 800));
+
+  // ⑦ GitHub (free - find professionals with LinkedIn in bio)
+  console.log('[search] [7/10] Trying GitHub...');
+  results = await searchGitHub(email, first_name, last_name);
+  if (results?.length > 0) return results;
+
+  await sleep(randomJitter(300, 800));
+
+  // ⑧ Hunter (email verification with data)
   console.log('[search] [8/10] Trying Hunter...');
   results = await searchHunter(email, first_name, last_name);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ⑧ Pattern Prediction — skip if no last_name (too many false-positive slugs).
-  let patternHits = [];
+  // ⑨ DuckDuckGo — additional candidates
+  console.log('[search] [9/10] Trying DuckDuckGo...');
+  const ddgResults = await searchDDG(email, first_name, last_name, root_domain);
+  if (ddgResults?.length > 0) return ddgResults;
+
+  await sleep(randomJitter(500, 1500));
+
+  // ⑩ Pattern Prediction — last resort; skip if no last_name (too many false positives)
   if (last_name) {
-    console.log('[search] [9/10] Trying pattern prediction...');
+    console.log('[search] [10/10] Trying pattern prediction...');
     const predicted = predictLinkedInUrl(email, first_name, last_name);
+    const patternHits = [];
     for (const candidate of predicted) {
       const exists = await verifyLinkedInUrl(candidate.url);
       if (exists) {
@@ -679,22 +699,12 @@ export async function triangulateLinkedIn(params) {
         patternHits.push(candidate);
       }
     }
+    if (patternHits.length > 0) {
+      console.log(`[search] ✓ Pattern found ${patternHits.length} candidate(s)`);
+      return patternHits;
+    }
   } else {
-    console.log('[search] [9/10] Skipping pattern prediction (no last name)');
-  }
-
-  await sleep(randomJitter(500, 1500));
-
-  // ⑨ DuckDuckGo — additional candidates (merged with pattern hits)
-  console.log('[search] [10/10] Trying DuckDuckGo...');
-  const ddgResults = await searchDDG(email, first_name, last_name, root_domain);
-
-  const merged = [...patternHits, ...(ddgResults ?? [])]
-    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-
-  if (merged.length > 0) {
-    console.log(`[search] ✓ Returning ${merged.length} candidate(s) for QA gate`);
-    return merged;
+    console.log('[search] [10/10] Skipping pattern prediction (no last name)');
   }
 
   console.log('[search] ✗ All sources exhausted → manual_review');
