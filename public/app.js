@@ -55,160 +55,205 @@ function switchTab(tab) {
   });
 }
 
-// ── Single submit — uses instant inline API (no queue, result in <8s) ─────────
+// ── Single submit — instant inline API (result in <10s) ─────────────────────
 async function submitSingle() {
-  const emailInput = document.getElementById('single-email-input');
-  const email = emailInput.value.trim();
+  const email = document.getElementById('single-email-input').value.trim();
   if (!email) return showToast('Enter an email address', 'error');
   if (!email.includes('@')) return showToast('Invalid email format', 'error');
-  if (!state.apiKey) {
-    showToast('API key not configured', 'error');
-    return;
-  }
+  if (!state.apiKey) return showToast('API key not configured', 'error');
 
-  // Show loading state on the Verify button
   const btn = document.getElementById('verify-btn');
-  const originalBtnHtml = btn ? btn.innerHTML : '';
-  if (btn) {
-    btn.disabled = true;
-    btn.innerHTML = `<svg class="animate-spin w-4 h-4 mr-2 inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>Searching…`;
-  }
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="inline-flex items-center gap-2"><svg class="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10" opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"/></svg>Searching</span>'; }
 
-  // Show instant result panel
-  showInstantPanel(email);
-
+  showInstantLoading(email);
   const start = Date.now();
 
   try {
-    const res = await apiFetch('/api/verify-instant', {
-      method: 'POST',
-      body: JSON.stringify({ email }),
-    });
-
-    const data = await res.json();
-    const elapsed = Date.now() - start;
-
-    renderInstantResult(data, elapsed);
-
+    const res = await apiFetch('/api/verify-instant', { method: 'POST', body: JSON.stringify({ email }) });
+    renderInstantResult(await res.json(), Date.now() - start);
   } catch (err) {
-    renderInstantResult({ status: 'error', email, reason: err.message }, Date.now() - start);
+    renderInstantResult({ status: 'error', email, reason: err.message, candidates: [] }, Date.now() - start);
   } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.innerHTML = originalBtnHtml || 'Verify';
-    }
+    if (btn) { btn.disabled = false; btn.innerHTML = 'Verify'; }
   }
 }
 
-function showInstantPanel(email) {
-  let panel = document.getElementById('instant-result-panel');
-  if (!panel) {
-    // Create panel if it doesn't exist
-    const section = document.getElementById('dashboard-section') || document.querySelector('.container') || document.body;
-    panel = document.createElement('div');
-    panel.id = 'instant-result-panel';
-    panel.className = 'mt-6 rounded-2xl border border-zinc-800 bg-zinc-900/60 backdrop-blur-sm p-6';
-    // Insert after the ingest section
-    const ingestSection = document.getElementById('ingest-section');
-    if (ingestSection && ingestSection.parentNode) {
-      ingestSection.parentNode.insertBefore(panel, ingestSection.nextSibling);
-    } else {
-      document.body.appendChild(panel);
-    }
+function getOrCreatePanel() {
+  let p = document.getElementById('instant-result-panel');
+  if (!p) {
+    p = document.createElement('div');
+    p.id = 'instant-result-panel';
+    const ref = document.getElementById('ingest-section');
+    if (ref?.parentNode) ref.parentNode.insertBefore(p, ref.nextSibling);
+    else document.querySelector('main')?.appendChild(p) || document.body.appendChild(p);
   }
-  panel.classList.remove('hidden');
-  panel.innerHTML = `
-    <div class="flex items-center gap-3 mb-4">
-      <div class="w-2 h-2 rounded-full bg-blue-400 animate-pulse"></div>
-      <span class="text-sm font-medium text-zinc-300">Searching LinkedIn for <span class="text-indigo-400">${escapeHtml(email)}</span>…</span>
-    </div>
-    <div class="space-y-2">
-      <div class="h-4 bg-zinc-800 rounded animate-pulse w-3/4"></div>
-      <div class="h-4 bg-zinc-800 rounded animate-pulse w-1/2"></div>
-      <div class="h-4 bg-zinc-800 rounded animate-pulse w-2/3"></div>
-    </div>
-    <p class="text-xs text-zinc-600 mt-3">Checking 10 sources across Google, LinkedIn, Apollo…</p>
-  `;
+  p.classList.remove('hidden');
+  return p;
+}
+
+function showInstantLoading(email) {
+  const p = getOrCreatePanel();
+  p.className = 'mt-8 rounded-2xl border border-zinc-800 bg-zinc-900/70 backdrop-blur-sm overflow-hidden';
+  p.innerHTML = `
+    <div class="p-6">
+      <div class="flex items-center gap-3 mb-5">
+        <div class="relative w-8 h-8">
+          <div class="absolute inset-0 rounded-full border-2 border-indigo-500/20"></div>
+          <div class="absolute inset-0 rounded-full border-2 border-transparent border-t-indigo-500 animate-spin"></div>
+        </div>
+        <div>
+          <p class="text-sm font-medium text-zinc-200">Searching for LinkedIn profile</p>
+          <p class="text-xs text-zinc-500">${escapeHtml(email)}</p>
+        </div>
+      </div>
+      <div class="space-y-2.5">
+        <div class="flex items-center gap-3"><div class="h-3 bg-zinc-800 rounded-full animate-pulse w-2/3"></div><div class="h-3 bg-zinc-800 rounded-full animate-pulse w-16"></div></div>
+        <div class="flex items-center gap-3"><div class="h-3 bg-zinc-800 rounded-full animate-pulse w-1/2"></div><div class="h-3 bg-zinc-800 rounded-full animate-pulse w-20"></div></div>
+        <div class="flex items-center gap-3"><div class="h-3 bg-zinc-800 rounded-full animate-pulse w-3/5"></div><div class="h-3 bg-zinc-800 rounded-full animate-pulse w-14"></div></div>
+      </div>
+      <p class="text-[11px] text-zinc-600 mt-4">Querying Google, Serper, Apollo, and 7 other sources...</p>
+    </div>`;
 }
 
 function renderInstantResult(data, elapsedMs) {
-  const panel = document.getElementById('instant-result-panel');
-  if (!panel) return;
+  const p = getOrCreatePanel();
+  const sec = (elapsedMs / 1000).toFixed(1);
+  const name = [data.first_name, data.last_name].filter(Boolean).join(' ');
+  const candidates = data.candidates || [];
+  const best = candidates.find(c => c.verified) || null;
+  const others = candidates.filter(c => c !== best);
 
-  const statusConfig = {
-    verified:      { color: 'emerald', label: 'Verified', icon: '✓' },
-    manual_review: { color: 'amber',   label: 'Not Found', icon: '⚠' },
-    error:         { color: 'rose',    label: 'Error',     icon: '✗' },
-  };
-  const cfg = statusConfig[data.status] || statusConfig.error;
-  const elapsedSec = (elapsedMs / 1000).toFixed(1);
+  // Hide the old job dashboard if it's showing from a previous queue-based submit
+  const dash = document.getElementById('dashboard-section');
+  if (dash) dash.classList.add('hidden');
+  const results = document.getElementById('results-section');
+  if (results) results.classList.add('hidden');
 
-  const linkedinCell = data.linkedin_url
-    ? `<a href="${escapeHtml(data.linkedin_url)}" target="_blank" rel="noopener"
-         class="inline-flex items-center gap-2 text-indigo-400 hover:text-indigo-300 font-medium text-sm transition-colors">
-         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-           <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-           <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
-         </svg>
-         ${escapeHtml(data.linkedin_url.replace('https://www.linkedin.com/in/', '').replace(/\/$/, ''))}
-       </a>
-       <button onclick="copyToClipboard('${escapeHtml(data.linkedin_url)}')"
-         class="ml-2 text-xs text-zinc-500 hover:text-zinc-300 border border-zinc-700 rounded px-2 py-0.5 transition-colors">
-         Copy URL
-       </button>`
-    : `<span class="text-zinc-600 text-sm">No profile found</span>`;
+  // Status header
+  const isVerified = data.status === 'verified' && best;
+  const hasCandidates = candidates.length > 0;
 
-  const personInfo = (data.first_name || data.last_name)
-    ? `<span class="text-zinc-400">${escapeHtml([data.first_name, data.last_name].filter(Boolean).join(' '))}</span>
-       ${data.company ? `<span class="text-zinc-600">·</span> <span class="text-zinc-500">${escapeHtml(data.company)}</span>` : ''}`
-    : '';
+  const headerBg = isVerified ? 'from-emerald-950/40 to-zinc-900/0' : hasCandidates ? 'from-blue-950/30 to-zinc-900/0' : 'from-zinc-800/30 to-zinc-900/0';
+  const headerIcon = isVerified
+    ? '<svg class="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>'
+    : hasCandidates
+      ? '<svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>'
+      : '<svg class="w-5 h-5 text-zinc-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>';
 
-  panel.innerHTML = `
-    <div class="flex items-center justify-between mb-4">
-      <div class="flex items-center gap-2">
-        <span class="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full
-          bg-${cfg.color}-950/60 text-${cfg.color}-400 border border-${cfg.color}-800">
-          ${cfg.icon} ${cfg.label}
-        </span>
-        ${personInfo ? `<span class="text-sm">${personInfo}</span>` : ''}
-      </div>
-      <span class="text-xs text-zinc-600">${elapsedSec}s</span>
-    </div>
+  const statusLabel = isVerified ? 'Match Found' : hasCandidates ? `${candidates.length} Profile${candidates.length > 1 ? 's' : ''} Found` : 'No Profiles Found';
+  const statusColor = isVerified ? 'text-emerald-400' : hasCandidates ? 'text-blue-400' : 'text-zinc-500';
 
-    <div class="space-y-3">
-      ${data.linkedin_url ? `
-      <div class="flex items-start gap-3 p-3 rounded-xl bg-zinc-800/50 border border-zinc-700/50">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" class="text-indigo-400 mt-0.5 shrink-0">
-          <path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/>
-        </svg>
-        <div class="min-w-0 flex-1">
-          ${linkedinCell}
-          ${data.meta_title ? `<p class="text-xs text-zinc-500 mt-1 truncate">${escapeHtml(data.meta_title)}</p>` : ''}
+  // Build verified result card
+  const bestCard = best ? buildCandidateCard(best, true) : '';
+
+  // Build other candidates list
+  const otherCards = others.slice(0, 9).map((c, i) => buildCandidateCard(c, false, i + 1)).join('');
+
+  p.className = 'mt-8 rounded-2xl border border-zinc-800 bg-zinc-900/70 backdrop-blur-sm overflow-hidden';
+  p.innerHTML = `
+    <!-- Header -->
+    <div class="bg-gradient-to-r ${headerBg} px-6 py-4 border-b border-zinc-800/80">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          ${headerIcon}
+          <div>
+            <p class="text-sm font-semibold ${statusColor}">${statusLabel}</p>
+            <p class="text-xs text-zinc-500">${name ? escapeHtml(name) : escapeHtml(data.email)}${data.company ? ' at ' + escapeHtml(data.company) : ''}</p>
+          </div>
         </div>
-      </div>` : ''}
-
-      ${data.reason ? `
-      <div class="flex items-start gap-2 text-xs text-zinc-500 bg-zinc-800/30 rounded-lg px-3 py-2">
-        <span class="text-zinc-600 shrink-0">Reason:</span>
-        <span>${escapeHtml(data.reason)}</span>
-      </div>` : ''}
+        <span class="text-[11px] text-zinc-600 font-mono tabular-nums">${sec}s</span>
+      </div>
     </div>
 
-    <div class="mt-4 flex items-center gap-3">
-      ${data.status === 'manual_review' || data.status === 'error' ? `
-        <button onclick="retryInstant('${escapeHtml(data.email)}')"
-          class="text-xs text-zinc-400 hover:text-indigo-400 border border-zinc-700 hover:border-indigo-700 rounded-lg px-3 py-1.5 transition-colors flex items-center gap-1.5">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.51"/>
-          </svg>
-          Retry
-        </button>` : ''}
-      <button onclick="document.getElementById('instant-result-panel').classList.add('hidden'); document.getElementById('single-email-input').value = ''; document.getElementById('single-email-input').focus();"
-        class="text-xs text-zinc-600 hover:text-zinc-400 transition-colors">
-        Search another email →
+    <div class="p-5 space-y-3">
+      ${bestCard}
+      ${others.length > 0 ? `
+        <div class="pt-2">
+          <button onclick="toggleOtherCandidates()" id="toggle-others-btn" class="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors">
+            <svg id="toggle-others-icon" class="w-3.5 h-3.5 transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+            <span id="toggle-others-text">${isVerified ? 'Other possible matches' : 'All candidates'} (${others.length})</span>
+          </button>
+          <div id="other-candidates" class="${isVerified ? 'hidden' : ''} mt-3 space-y-2">
+            ${otherCards}
+          </div>
+        </div>` : ''}
+
+      ${!hasCandidates && data.reason ? `
+        <div class="rounded-xl bg-zinc-800/40 border border-zinc-800 px-4 py-3">
+          <p class="text-xs text-zinc-500">${escapeHtml(data.reason)}</p>
+        </div>` : ''}
+    </div>
+
+    <!-- Footer -->
+    <div class="px-6 py-3 border-t border-zinc-800/60 flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        ${!isVerified ? `
+          <button onclick="retryInstant('${escapeHtml(data.email)}')"
+            class="inline-flex items-center gap-1.5 text-xs text-zinc-400 hover:text-indigo-400 border border-zinc-700 hover:border-indigo-600 rounded-lg px-3 py-1.5 transition-all">
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.51"/></svg>
+            Retry
+          </button>` : ''}
+      </div>
+      <button onclick="document.getElementById('instant-result-panel').classList.add('hidden');document.getElementById('single-email-input').value='';document.getElementById('single-email-input').focus();"
+        class="text-xs text-zinc-600 hover:text-zinc-300 transition-colors">
+        Search another email
       </button>
-    </div>
-  `;
+    </div>`;
+}
+
+function buildCandidateCard(c, isBest, rank) {
+  const slug = c.url.replace('https://www.linkedin.com/in/', '').replace(/\/$/, '');
+  const confColors = {
+    high:   { bg: 'bg-emerald-950/50', border: 'border-emerald-800/50', badge: 'bg-emerald-500/15 text-emerald-400 border-emerald-700', label: 'Best Match' },
+    medium: { bg: 'bg-blue-950/30',    border: 'border-blue-900/30',    badge: 'bg-blue-500/15 text-blue-400 border-blue-700',       label: 'Possible' },
+    low:    { bg: 'bg-zinc-800/30',     border: 'border-zinc-800',       badge: 'bg-zinc-700/40 text-zinc-500 border-zinc-700',       label: 'Unlikely' },
+  };
+  const conf = confColors[c.confidence] || confColors.low;
+
+  // Extract readable name from title (e.g. "Amin Shaikh - Passionbits | LinkedIn" → "Amin Shaikh")
+  const titleName = (c.title || '').split(/\s*[-|–]\s*/)[0].trim();
+  const titleCompany = (c.title || '').match(/[-|–]\s*(.+?)(?:\s*[|]\s*LinkedIn)?$/i)?.[1]?.trim() || '';
+
+  return `
+    <div class="rounded-xl ${conf.bg} border ${conf.border} p-4 transition-all hover:border-zinc-600 group">
+      <div class="flex items-start justify-between gap-3">
+        <div class="flex items-start gap-3 min-w-0 flex-1">
+          <!-- LinkedIn icon -->
+          <div class="w-9 h-9 rounded-lg bg-[#0A66C2]/15 flex items-center justify-center shrink-0 mt-0.5">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" class="text-[#0A66C2]">
+              <path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/>
+            </svg>
+          </div>
+          <div class="min-w-0 flex-1">
+            ${titleName ? `<p class="text-sm font-medium text-zinc-200 truncate">${escapeHtml(titleName)}</p>` : ''}
+            ${titleCompany ? `<p class="text-xs text-zinc-500 truncate">${escapeHtml(titleCompany)}</p>` : ''}
+            <a href="${escapeHtml(c.url)}" target="_blank" rel="noopener"
+               class="inline-flex items-center gap-1 text-xs text-indigo-400/80 hover:text-indigo-300 mt-1 transition-colors">
+              linkedin.com/in/${escapeHtml(slug)}
+              <svg class="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+            </a>
+          </div>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          <span class="text-[10px] font-medium px-2 py-0.5 rounded-full border ${conf.badge}">${conf.label}</span>
+          <button onclick="copyToClipboard('${escapeHtml(c.url)}')" title="Copy URL"
+            class="p-1.5 rounded-lg text-zinc-600 hover:text-zinc-300 hover:bg-zinc-700/50 transition-all">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      ${c.reason && isBest ? `<p class="text-[11px] text-zinc-600 mt-2 pl-12">${escapeHtml(c.reason)}</p>` : ''}
+    </div>`;
+}
+
+function toggleOtherCandidates() {
+  const el = document.getElementById('other-candidates');
+  const icon = document.getElementById('toggle-others-icon');
+  if (!el) return;
+  el.classList.toggle('hidden');
+  if (icon) icon.style.transform = el.classList.contains('hidden') ? '' : 'rotate(180deg)';
 }
 
 async function retryInstant(email) {

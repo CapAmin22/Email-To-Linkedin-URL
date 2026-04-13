@@ -207,6 +207,21 @@ export async function llmQaValidation(parsed, meta) {
     }
   }
 
+  // ── Single-name recovery ────────────────────────────────────────────────
+  // For single-name emails (e.g. amin@passionbits.io), the LLM often rejects
+  // because title says "Amin Shaikh" which "implies a full name" not just "Amin".
+  // But if first name IS in the title AND company IS confirmed, that's a match.
+  if (!isVerified && !last_name && first_name) {
+    const titleLower = (meta.title || '').toLowerCase();
+    const hasFirstName = titleLower.includes(first_name.toLowerCase());
+    if (hasFirstName && companyFoundInMeta) {
+      const loc = strength === 'title' ? 'title' : 'description';
+      isVerified = true;
+      reason = `First name "${first_name}" found in title with company confirmed in ${loc}. Single-name email — full name on profile is expected.`;
+      console.log(`[qa] Single-name recovery: "${first_name}" + company match → verified`);
+    }
+  }
+
   return { is_verified: isVerified, reason, companyMatchStrength: strength };
 }
 
