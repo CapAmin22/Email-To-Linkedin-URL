@@ -14,6 +14,8 @@ const NUBELA_KEY = process.env.API_NUBELA || process.env.PROXYCURL_API_KEY;
 
 const SCRAPER_API_KEY = process.env.SCRAPER_API_KEY;
 const SERPER_API_KEY = process.env.SERPER_API_KEY;
+const GOOGLE_CSE_KEY = process.env.GOOGLE_CSE_API_KEY;
+const GOOGLE_CSE_CX = process.env.GOOGLE_CSE_CX;
 
 // ─ LLM-Powered X-Ray Query Generator ────────────────────────────────────────
 // Uses LLM to generate diverse, tailored Google X-ray queries for each person.
@@ -184,7 +186,55 @@ async function searchSerper(queries) {
   return null;
 }
 
-// ─ Source 0b: Gemini Search Grounding (FREE — Google Search via LLM) ──────
+// ─ Source 3: Google Custom Search API (100 free/day, restricted to linkedin.com) ─
+async function searchGoogleCSE(queries) {
+  if (!GOOGLE_CSE_KEY || !GOOGLE_CSE_CX) return null;
+
+  const urlMap = new Map();
+
+  for (let i = 0; i < queries.length; i++) {
+    const q = queries[i];
+    try {
+      // CSE is already restricted to linkedin.com, so strip site: prefix
+      const cleanQuery = q.replace(/site:linkedin\.com\/in\s*/i, '').trim();
+      const params = new URLSearchParams({
+        key: GOOGLE_CSE_KEY,
+        cx: GOOGLE_CSE_CX,
+        q: cleanQuery,
+        num: '5',
+      });
+      const res = await fetch(`https://www.googleapis.com/customsearch/v1?${params}`, {
+        signal: AbortSignal.timeout(15000),
+      });
+
+      if (!res.ok) {
+        console.warn(`[search] Google CSE q${i} returned ${res.status}`);
+        continue;
+      }
+
+      const data = await res.json();
+      const results = (data.items || []).map(item => ({
+        link: item.link,
+        title: item.title,
+        snippet: item.snippet,
+      }));
+      collectLinkedInResults(results, i, urlMap, 'google_cse');
+    } catch (err) {
+      console.warn(`[search] Google CSE q${i} error:`, err.message);
+    }
+
+    if (i < queries.length - 1) await sleep(randomJitter(300, 800));
+  }
+
+  const ranked = [...urlMap.values()].sort((a, b) => b.score - a.score);
+  if (ranked.length > 0) {
+    console.log('[search] ✓ Google CSE found:', ranked.length, 'result(s), top score:', ranked[0].score);
+    return ranked;
+  }
+  return null;
+}
+
+// ─ Source 4: Gemini Search Grounding (FREE — Google Search via LLM) ──────
 // Gemini with google_search tool executes real Google searches and returns
 // grounded results. Unlike DDG, this works from Vercel serverless IPs.
 // Returns candidates with DDG-compatible {url, title, description} fields
@@ -568,42 +618,49 @@ export async function triangulateLinkedIn(params) {
   await sleep(randomJitter(300, 800));
 
   // ② Serper.dev (fast, 2500 free queries, second Google backend)
-  console.log('[search] [2/9] Trying Serper.dev...');
+  console.log('[search] [2/10] Trying Serper.dev...');
   results = await searchSerper(xrayQueries);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
-  // ③ Gemini Search Grounding (backup Google Search via LLM)
-  console.log('[search] [3/9] Trying Gemini Search Grounding...');
+  // ③ Google Custom Search API (100 free/day, restricted to linkedin.com)
+  console.log('[search] [3/10] Trying Google Custom Search API...');
+  results = await searchGoogleCSE(xrayQueries);
+  if (results?.length > 0) return results;
+
+  await sleep(randomJitter(300, 800));
+
+  // ④ Gemini Search Grounding (backup Google Search via LLM)
+  console.log('[search] [4/10] Trying Gemini Search Grounding...');
   results = await searchGemini(email, first_name, last_name, legal_company_name);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
   // ④ Nubela (direct email match)
-  console.log('[search] [4/9] Trying Nubela...');
+  console.log('[search] [5/10] Trying Nubela...');
   results = await searchNubela(email);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
   // ⑤ GitHub (free - find professionals with LinkedIn in bio)
-  console.log('[search] [5/9] Trying GitHub...');
+  console.log('[search] [6/10] Trying GitHub...');
   results = await searchGitHub(email, first_name, last_name);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
   // ⑥ Apollo (email-to-profile lookup)
-  console.log('[search] [6/9] Trying Apollo...');
+  console.log('[search] [7/10] Trying Apollo...');
   results = await searchApollo(email, first_name, last_name);
   if (results?.length > 0) return results;
 
   await sleep(randomJitter(300, 800));
 
   // ⑦ Hunter (email verification with data)
-  console.log('[search] [7/9] Trying Hunter...');
+  console.log('[search] [8/10] Trying Hunter...');
   results = await searchHunter(email, first_name, last_name);
   if (results?.length > 0) return results;
 
@@ -612,7 +669,7 @@ export async function triangulateLinkedIn(params) {
   // ⑧ Pattern Prediction — skip if no last_name (too many false-positive slugs).
   let patternHits = [];
   if (last_name) {
-    console.log('[search] [8/9] Trying pattern prediction...');
+    console.log('[search] [9/10] Trying pattern prediction...');
     const predicted = predictLinkedInUrl(email, first_name, last_name);
     for (const candidate of predicted) {
       const exists = await verifyLinkedInUrl(candidate.url);
@@ -622,13 +679,13 @@ export async function triangulateLinkedIn(params) {
       }
     }
   } else {
-    console.log('[search] [8/9] Skipping pattern prediction (no last name)');
+    console.log('[search] [9/10] Skipping pattern prediction (no last name)');
   }
 
   await sleep(randomJitter(500, 1500));
 
   // ⑨ DuckDuckGo — additional candidates (merged with pattern hits)
-  console.log('[search] [9/9] Trying DuckDuckGo...');
+  console.log('[search] [10/10] Trying DuckDuckGo...');
   const ddgResults = await searchDDG(email, first_name, last_name, root_domain);
 
   const merged = [...patternHits, ...(ddgResults ?? [])]
