@@ -177,10 +177,11 @@ async function searchGoogle(queries) {
 }
 
 // ─ Source 2: Serper.dev (fast, 2500 free queries) ────────────────────────
-async function searchSerper(queries) {
+async function searchSerper(queries, timeoutMs = 5000) {
   if (!SERPER_API_KEY) return null;
 
   const urlMap = new Map();
+  const perQueryTimeout = Math.max(1000, Math.floor(timeoutMs / queries.length));
 
   for (let i = 0; i < queries.length; i++) {
     const q = queries[i];
@@ -192,7 +193,7 @@ async function searchSerper(queries) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ q, num: 5 }),
-        signal: AbortSignal.timeout(15000),
+        signal: AbortSignal.timeout(Math.min(perQueryTimeout, 3000)),
       });
 
       if (!res.ok) {
