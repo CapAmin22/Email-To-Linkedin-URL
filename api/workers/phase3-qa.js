@@ -178,13 +178,26 @@ export async function llmQaValidation(parsed, meta) {
   let isVerified = result.is_verified === true || result.is_verified === 'true';
   let reason = typeof result.reason === 'string' ? result.reason.trim() : String(result.reason ?? '');
 
-  // Special case: if LLM says no, but we have PERFECT name match + company mention somewhere,
-  // it might be a job change. Verify with a note about the possible job change.
+  // ── Programmatic safety net ──────────────────────────────────────────────
+  // LLMs sometimes hallucinate and ignore Rule 2 (company match).
+  // We programmatically verify that at least one company alias appears
+  // in the title OR description. If not, override LLM's verdict.
+  const combinedText = `${meta.title} ${meta.description}`;
+  const companyFoundInMeta = hasAnyCompanyMention(known_aliases, combinedText);
+
+  if (isVerified && !companyFoundInMeta) {
+    console.log('[qa] Safety net: LLM said verified but no company alias found in metadata. Overriding to false.');
+    isVerified = false;
+    reason = `Name may match but no Target Company alias found in title or description. LLM overridden by safety net.`;
+  }
+
+  // ── Job-change recovery ──────────────────────────────────────────────────
+  // If LLM says no, but we have PERFECT name match (first+last) AND company
+  // IS mentioned somewhere in the metadata, it may be a job change.
   if (!isVerified && last_name && isPerfectNameMatch(first_name, last_name, meta.title)) {
-    const companyMentioned = hasAnyCompanyMention(known_aliases, meta.title + ' ' + meta.description);
-    if (companyMentioned) {
+    if (companyFoundInMeta) {
       isVerified = true;
-      reason = `Perfect name match (${targetName}) with company reference found; may have changed positions within or after ${known_aliases[0]}.`;
+      reason = `Perfect name match (${targetName}) with company reference found in metadata; may have changed roles or companies since ${known_aliases[0]}.`;
     }
   }
 
