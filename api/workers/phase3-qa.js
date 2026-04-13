@@ -222,18 +222,19 @@ export async function llmQaValidation(parsed, meta) {
  * }>}
  */
 export async function runQaGate(profileUrl, parsed, candidate = {}) {
-  // ScraperAPI's free tier 403s on LinkedIn ("paid plan only"), and direct
-  // fetch hits LinkedIn's HTTP 999 anti-bot wall. The only zero-cost source
-  // of LinkedIn metadata is search-engine snippets — DDG already returns
-  // the page title + meta description in each candidate, so we use those
-  // directly for the QA gate. Identity-via-metadata still applies; the only
-  // change is *where* the metadata comes from.
+  // Metadata resolution priority:
+  // 1. Serper/DDG snippet title — rich and directly from Google results
+  // 2. Web mention synthetic metadata — from external sources (RocketReach etc.)
+  // 3. ScraperAPI fetch / direct fetch — last resort (often blocked or exhausted)
   let meta;
+  const source = candidate.source?.method || 'unknown';
+
   if (candidate.title && candidate.title.trim()) {
-    console.log('[qa] Using DDG snippet metadata (title:', candidate.title.slice(0, 60) + ')');
+    const label = source === 'web_confirmed' ? 'web mention' : 'search snippet';
+    console.log(`[qa] Using ${label} metadata (title: ${candidate.title.slice(0, 60)})`);
     meta = { title: candidate.title, description: candidate.description || '' };
   } else {
-    // Pattern-only candidate or no DDG snippet — try the (likely-blocked) fetch.
+    // Pattern-only candidate or no search snippet — try the (likely-blocked) fetch.
     meta = await fetchLinkedInMeta(profileUrl);
   }
 
